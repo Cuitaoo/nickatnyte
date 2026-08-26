@@ -6,7 +6,13 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from starter.retrieval import CatalogRetriever, SearchResult
+from starter.retrieval import (
+    MAX_PROFILE_BOOST,
+    CatalogRetriever,
+    RankedCandidate,
+    SearchResult,
+    select_diverse_recommendations,
+)
 from starter.state import ShoppingState
 
 
@@ -58,6 +64,30 @@ PRODUCTS = [
         "price": 109.0,
         "average_rating": 4.4,
         "rating_number": 90,
+    },
+    {
+        "parent_asin": "COMFORT_SHOE",
+        "title": "Gray Everyday Walking Shoe",
+        "categories": ["Women", "Shoes", "Walking"],
+        "features": ["comfort foam footbed"],
+        "details": {"color": "gray", "size": "8"},
+        "description": ["casual walking sneaker"],
+        "store": "DailyCo",
+        "price": 64.0,
+        "average_rating": 4.3,
+        "rating_number": 150,
+    },
+    {
+        "parent_asin": "EXACT_BLUE_SHOE",
+        "title": "Blue Everyday Walking Shoe",
+        "categories": ["Women", "Shoes", "Walking"],
+        "features": ["foam footbed"],
+        "details": {"color": "blue", "size": "8"},
+        "description": ["casual walking sneaker"],
+        "store": "DailyCo",
+        "price": 64.0,
+        "average_rating": 4.3,
+        "rating_number": 150,
     },
     {
         "parent_asin": "COTTON_SHIRT",
@@ -180,6 +210,86 @@ class RetrievalTest(unittest.TestCase):
         self.assertIn("category", {route for routes in evidence.values() for route in routes})
         self.assertIn("attribute", {route for routes in evidence.values() for route in routes})
         self.assertIn("latest_message", {route for routes in evidence.values() for route in routes})
+
+
+    def test_confirmed_preference_outweighs_profile_tendency(self) -> None:
+        state = replace(
+            ShoppingState.new(
+                "s",
+                {"summary": "always prioritizes comfort", "preference_tags": ["comfort"]},
+            ),
+            category="shoes",
+            preferences={"color": ("blue",)},
+        )
+
+        result = self.retriever.search(state, "shoes", 4)
+
+        self.assertLess(
+            result.recommendations.index("EXACT_BLUE_SHOE"),
+            result.recommendations.index("COMFORT_SHOE"),
+        )
+
+    def test_profile_breaks_a_near_tie_without_becoming_a_filter(self) -> None:
+        plain_state = replace(ShoppingState.new("plain", {}), category="shoes")
+        profile_state = replace(
+            ShoppingState.new(
+                "profile", {"summary": "comfort", "preference_tags": []}
+            ),
+            category="shoes",
+        )
+
+        plain = self.retriever.search(plain_state, "everyday walking shoes", 10)
+        profiled = self.retriever.search(profile_state, "everyday walking shoes", 10)
+        plain_scores = {item.product_id: item.score for item in plain.candidates}
+        profiled_scores = {item.product_id: item.score for item in profiled.candidates}
+
+        self.assertIn("COMFORT_SHOE", profiled.recommendations)
+        profile_delta = profiled_scores["COMFORT_SHOE"] - plain_scores["COMFORT_SHOE"]
+        self.assertGreater(profile_delta, 0.0)
+        self.assertLessEqual(profile_delta, MAX_PROFILE_BOOST)
+
+    def test_diagnostics_report_candidate_disagreement(self) -> None:
+        result = self.retriever.search(
+            replace(ShoppingState.new("s", {}), category="boots"),
+            "winter boots",
+            3,
+        )
+
+        self.assertGreater(result.diagnostics["material"].coverage, 0.0)
+        self.assertGreater(result.diagnostics["material"].disagreement, 0.0)
+        self.assertGreaterEqual(result.diagnostics["feature"].relevance, 0.0)
+        self.assertLessEqual(result.diagnostics["feature"].relevance, 1.0)
+
+    def test_budget_and_removed_values_change_order(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="boots",
+            preferences={"budget": ("under $70",)},
+            removed_preferences={"material": ("leather",)},
+        )
+
+        result = self.retriever.search(state, "black winter boots", 2)
+
+        self.assertEqual(result.recommendations[0], "SYNTH_BOOT")
+        winner = next(
+            item for item in result.candidates if item.product_id == "SYNTH_BOOT"
+        )
+        self.assertIn("preference:budget", dict(winner.score_components))
+
+    def test_top_six_are_strict_and_tail_can_cover_an_underrepresented_route(self) -> None:
+        candidates = tuple(
+            RankedCandidate(
+                product_id=f"P{index}",
+                score=10.0 - index * 0.1,
+                route_ranks=(("category" if index < 9 else "feature_use_case", index + 1),),
+            )
+            for index in range(12)
+        )
+
+        selected = select_diverse_recommendations(candidates, 10)
+
+        self.assertEqual(selected[:6], tuple(f"P{index}" for index in range(6)))
+        self.assertIn("P9", selected[6:])
 
 
 if __name__ == "__main__":
