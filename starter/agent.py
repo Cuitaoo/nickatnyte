@@ -11,7 +11,7 @@ from starter.llm_agent import (
 )
 from starter.preference_tool import apply_preference_patch, parse_preference_fallback
 from starter.questions import choose_clarification
-from starter.retrieval import CatalogRetriever
+from starter.retrieval import CatalogRetriever, SearchResult
 from starter.state import ShoppingState
 
 
@@ -86,16 +86,23 @@ class Agent:
 
         requested_count = min(10, max(0, int(top_k)))
         try:
-            identifiers = self.retriever.search(
+            search_result = self.retriever.search(
                 state, str(user_message), requested_count
             )
         except Exception:
-            identifiers = []
-        identifiers = list(dict.fromkeys(str(value) for value in identifiers))[
-            :requested_count
-        ]
+            search_result = SearchResult.empty()
 
-        message, ask_attribute = choose_clarification(state, int(turn))
+        identifiers = [
+            product_id
+            for product_id in dict.fromkeys(search_result.recommendations)
+            if product_id in self.retriever.metadata
+        ][:requested_count]
+
+        message, ask_attribute = choose_clarification(
+            state,
+            int(turn),
+            search_result.diagnostics,
+        )
         asked_attributes = list(state.asked_attributes)
         if ask_attribute and ask_attribute not in asked_attributes:
             asked_attributes.append(ask_attribute)
