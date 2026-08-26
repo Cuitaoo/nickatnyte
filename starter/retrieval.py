@@ -546,7 +546,15 @@ class CatalogRetriever:
             )
 
         latest_phrase = " ".join(lexical_terms([latest_message]))
-        state_weight = 0.15 if _is_override(latest_message) else 1.0
+        latest_lower = latest_message.lower()
+        override_message = _is_override(latest_message)
+        category_weight = (
+            0.15
+            if override_message
+            and state.category
+            and state.category.lower() not in latest_lower
+            else 1.0
+        )
         profile_terms = _profile_terms(state)
         components: dict[str, defaultdict[str, float]] = {}
         matched: dict[str, set[str]] = {}
@@ -558,15 +566,20 @@ class CatalogRetriever:
             hits: set[str] = set()
 
             if state.category and state.category.lower() in product["categories"]:
-                parts["category"] += CATEGORY_BOOST * state_weight
+                parts["category"] += CATEGORY_BOOST * category_weight
             title_and_category = f"{product['title']} {product['categories']}"
             if latest_phrase and latest_phrase in title_and_category:
                 parts["exact_phrase"] += EXACT_PHRASE_BOOST
             for attribute, values in state.preferences.items():
                 for value in values:
                     if self._preference_matches(attribute, value, product):
+                        preference_weight = (
+                            0.15
+                            if override_message and value.lower() not in latest_lower
+                            else 1.0
+                        )
                         parts[f"preference:{attribute}"] += (
-                            CONFIRMED_ATTRIBUTE_BOOST * state_weight
+                            CONFIRMED_ATTRIBUTE_BOOST * preference_weight
                         )
                         hits.add(attribute)
             for attribute, values in state.removed_preferences.items():

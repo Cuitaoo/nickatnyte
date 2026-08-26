@@ -21,11 +21,11 @@ QUESTION_TEMPLATES = {
 
 QUESTION_PRIORS = {
     "category": 0.20,
-    "feature": 0.30,
-    "use_case": 0.27,
-    "style": 0.22,
-    "material": 0.20,
-    "color": 0.15,
+    "material": 0.46,
+    "color": 0.36,
+    "feature": 0.15,
+    "use_case": 0.14,
+    "style": 0.12,
     "size": 0.12,
     "brand": 0.05,
     "budget": 0.05,

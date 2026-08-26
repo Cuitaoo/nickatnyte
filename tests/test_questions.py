@@ -56,6 +56,19 @@ class ClarificationTest(unittest.TestCase):
         self.assertEqual(attribute, "feature")
         self.assertIn("feature", message.lower())
 
+    def test_material_beats_noisy_feature_signal_for_apparel_pool(self) -> None:
+        state = replace(ShoppingState.new("s", {}), category="women dresses")
+        diagnostics = {
+            "material": diagnostic("material", 0.74, 0.36, 0.76),
+            "feature": diagnostic("feature", 0.94, 0.61, 0.99),
+            "color": diagnostic("color", 0.45, 0.64, 0.62),
+        }
+
+        message, attribute = choose_clarification(state, 1, diagnostics)
+
+        self.assertEqual(attribute, "material")
+        self.assertIn("material", message.lower())
+
     def test_category_is_asked_only_when_missing_and_candidates_disagree(self) -> None:
         diagnostics = {
             "category": diagnostic("category", 1.0, 0.9, 0.9),

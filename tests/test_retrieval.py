@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from starter.retrieval import (
+    CONFIRMED_ATTRIBUTE_BOOST,
     MAX_PROFILE_BOOST,
     RRF_OFFSET,
     CatalogRetriever,
@@ -149,6 +150,27 @@ class RetrievalTest(unittest.TestCase):
 
         self.assertIn("HIKING_PACK", results)
         self.assertLess(results.index("HIKING_PACK"), results.index("COTTON_SHIRT"))
+
+    def test_override_message_does_not_weaken_updated_preferences(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="boots",
+            preferences={"material": ("leather",)},
+        )
+
+        result = self.retriever.search(
+            state,
+            "Actually, ignore my earlier preference. What I need is leather.",
+            3,
+        )
+        target = next(
+            item for item in result.candidates if item.product_id == "LEATHER_BOOT"
+        )
+
+        self.assertEqual(
+            dict(target.score_components)["preference:material"],
+            CONFIRMED_ATTRIBUTE_BOOST,
+        )
 
     def test_removed_value_penalizes_matching_product(self) -> None:
         state = replace(
