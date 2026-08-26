@@ -117,6 +117,23 @@ def _looks_like_attribute_constraint(value: str) -> bool:
     )
 
 
+def _canonical_preference_values(attribute: str, value: str) -> list[str]:
+    vocabularies = {
+        "material": MATERIALS,
+        "color": COLORS,
+        "use_case": USE_CASES,
+    }
+    vocabulary = vocabularies.get(attribute)
+    if vocabulary is None:
+        return [value]
+    matches = [
+        candidate
+        for candidate in vocabulary
+        if re.search(rf"\b{re.escape(candidate)}\b", value, re.IGNORECASE)
+    ]
+    return matches or [value]
+
+
 def apply_preference_patch(
     state: ShoppingState, patch: PreferencePatch
 ) -> ShoppingState:
@@ -194,12 +211,13 @@ def apply_preference_patch(
             no_preference.discard("category")
             continue
         no_preference.discard(attribute)
-        if value in removed.get(attribute, []):
-            removed[attribute].remove(value)
-            if not removed[attribute]:
-                removed.pop(attribute)
         bucket = preferences.setdefault(attribute, [])
-        _append_unique(bucket, value)
+        for canonical_value in _canonical_preference_values(attribute, value):
+            if canonical_value in removed.get(attribute, []):
+                removed[attribute].remove(canonical_value)
+                if not removed[attribute]:
+                    removed.pop(attribute)
+            _append_unique(bucket, canonical_value)
 
     rejected_values = {value for values in removed.values() for value in values}
     for raw_term in patch.search_terms:

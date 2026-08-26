@@ -35,6 +35,26 @@ class PreferenceUpdateTest(unittest.TestCase):
         self.assertEqual(updated.search_terms, ("running",))
         self.assertEqual(state.preferences, {})
 
+    def test_compound_material_value_is_canonicalized_for_search(self) -> None:
+        state = ShoppingState.new("s1", {})
+
+        updated = apply_preference_patch(
+            state,
+            PreferencePatch(
+                set_preferences=[
+                    PreferenceValue(
+                        attribute="material",
+                        value="95% Polyester, 5% Spandex",
+                    )
+                ]
+            ),
+        )
+
+        self.assertEqual(
+            updated.preferences,
+            {"material": ("polyester", "spandex")},
+        )
+
     def test_new_state_copies_the_user_profile(self) -> None:
         profile = {"summary": "likes comfort", "preference_tags": ["fit"]}
         state = ShoppingState.new("s1", profile)
