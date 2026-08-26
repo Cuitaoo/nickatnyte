@@ -120,6 +120,23 @@ class PreferenceInterpreterTest(unittest.TestCase):
         with self.assertRaises(InvalidInterpretation):
             interpreter.interpret("shoes", ShoppingState.new("s", {}))
 
+    def test_invalid_tool_call_preserves_billable_usage(self) -> None:
+        response = AIMessage(
+            content="plain text",
+            usage_metadata={
+                "input_tokens": 31,
+                "output_tokens": 7,
+                "total_tokens": 38,
+            },
+        )
+        interpreter = PreferenceInterpreter(FakeChatModel(response))
+
+        with self.assertRaises(InvalidInterpretation) as caught:
+            interpreter.interpret("shoes", ShoppingState.new("s", {}))
+
+        self.assertEqual(caught.exception.prompt_tokens, 31)
+        self.assertEqual(caught.exception.completion_tokens, 7)
+
     def test_more_than_one_tool_call_is_rejected(self) -> None:
         calls = [
             {

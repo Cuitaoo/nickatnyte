@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from starter.agent import Agent
-from starter.llm_agent import Interpretation
+from starter.llm_agent import Interpretation, InvalidInterpretation
 from starter.preference_tool import PreferencePatch, PreferenceValue, apply_preference_patch
 
 
@@ -77,6 +77,13 @@ class FailingInterpreter:
         raise TimeoutError("simulated model timeout")
 
 
+class UsageFailingInterpreter(FailingInterpreter):
+    def interpret(self, message: str, state) -> Interpretation:
+        raise InvalidInterpretation(
+            "invalid tool call", prompt_tokens=17, completion_tokens=5
+        )
+
+
 class AgentIntegrationTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -141,6 +148,19 @@ class AgentIntegrationTest(unittest.TestCase):
         self.assertEqual(
             set(response), {"message", "ask_attribute", "recommendations", "usage"}
         )
+
+    def test_invalid_model_output_reports_usage_before_falling_back(self) -> None:
+        agent = Agent(self.catalog_path, interpreter=UsageFailingInterpreter())
+        self.addCleanup(agent.close)
+        agent.reset("s", {"summary": "", "preference_tags": []})
+
+        response = agent.respond("s", "black leather boots", 1, 10)
+
+        self.assertEqual(
+            response["usage"], {"prompt_tokens": 17, "completion_tokens": 5}
+        )
+        self.assertEqual(agent.session_state("s").prompt_tokens, 17)
+        self.assertEqual(agent.session_state("s").completion_tokens, 5)
 
     def test_sessions_are_isolated_and_reset_replaces_existing_state(self) -> None:
         agent = Agent(self.catalog_path, interpreter=None)

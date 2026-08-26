@@ -4,7 +4,11 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from starter.llm_agent import Interpretation, PreferenceInterpreter
+from starter.llm_agent import (
+    Interpretation,
+    InvalidInterpretation,
+    PreferenceInterpreter,
+)
 from starter.preference_tool import apply_preference_patch, parse_preference_fallback
 from starter.questions import choose_clarification
 from starter.retrieval import CatalogRetriever
@@ -71,6 +75,10 @@ class Agent:
                 state, prompt_tokens, completion_tokens = self._validated_interpretation(
                     session_id, interpretation
                 )
+            except InvalidInterpretation as exc:
+                prompt_tokens = exc.prompt_tokens
+                completion_tokens = exc.completion_tokens
+                state = self._fallback_state(user_message, state)
             except Exception:
                 state = self._fallback_state(user_message, state)
         else:

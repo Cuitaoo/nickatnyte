@@ -37,6 +37,17 @@ feature, use_case, and other."""
 class InvalidInterpretation(RuntimeError):
     """The model did not produce one valid preference update tool call."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.prompt_tokens = max(0, int(prompt_tokens))
+        self.completion_tokens = max(0, int(completion_tokens))
+
 
 class PreferenceToolInput(BaseModel):
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
@@ -199,11 +210,27 @@ class PreferenceInterpreter:
         )
         if not isinstance(response, AIMessage):
             raise InvalidInterpretation("model response is not an AI message")
-        if len(response.tool_calls) != 1:
-            raise InvalidInterpretation("model must make exactly one tool call")
-        if response.tool_calls[0].get("name") != "update_user_preferences":
-            raise InvalidInterpretation("model called an unsupported tool")
         prompt_tokens, completion_tokens = _usage_from_message(response)
+        if len(response.tool_calls) != 1:
+            raise InvalidInterpretation(
+                "model must make exactly one tool call",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
+        if response.tool_calls[0].get("name") != "update_user_preferences":
+            raise InvalidInterpretation(
+                "model called an unsupported tool",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
+        try:
+            PreferencePatch.model_validate(response.tool_calls[0].get("args", {}))
+        except Exception as exc:
+            raise InvalidInterpretation(
+                "model returned invalid preference arguments",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            ) from exc
         return {
             "messages": [response],
             "prompt_tokens": prompt_tokens,
