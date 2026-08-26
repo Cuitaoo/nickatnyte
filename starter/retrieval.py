@@ -274,6 +274,59 @@ ATTRIBUTE_LEXICONS = {
             "marathon",
         }
     ),
+    "feature": frozenset(
+        {
+            "adjustable",
+            "breathable",
+            "closure",
+            "comfort",
+            "cushioning",
+            "durable",
+            "insulated",
+            "lightweight",
+            "lining",
+            "pocket",
+            "pockets",
+            "sole",
+            "stretch",
+            "waterproof",
+            "windproof",
+            "zipper",
+        }
+    ),
+    "style": frozenset(
+        {
+            "athletic",
+            "casual",
+            "classic",
+            "formal",
+            "loose",
+            "maxi",
+            "mini",
+            "modern",
+            "relaxed",
+            "slim",
+            "sporty",
+            "vintage",
+        }
+    ),
+    "size": frozenset(
+        {
+            "xs",
+            "s",
+            "m",
+            "l",
+            "xl",
+            "xxl",
+            "small",
+            "medium",
+            "large",
+            "wide",
+            "narrow",
+            "petite",
+            "plus",
+        }
+    ),
 }
 ATTRIBUTE_RELEVANCE_PRIORS = {
     "category": 0.75,
@@ -312,7 +365,11 @@ def _attribute_signature(product: dict[str, Any], attribute: str) -> str:
     if attribute == "budget":
         price = product["price"]
         return "" if price is None else f"band{int(price // 25)}"
-    return " ".join(lexical_terms([_attribute_text(product, attribute)])[:4])
+    if attribute == "category":
+        return " ".join(lexical_terms([product["categories"]])[-3:])
+    if attribute == "brand":
+        return " ".join(lexical_terms([product["store"]])[:2])
+    return ""
 
 
 def _profile_terms(state: ShoppingState) -> list[str]:
@@ -327,31 +384,7 @@ def select_diverse_recommendations(
 ) -> tuple[str, ...]:
     if top_k <= 0 or not candidates:
         return ()
-    locked_count = min(6, top_k, len(candidates))
-    selected = list(candidates[:locked_count])
-    remaining = list(candidates[locked_count:])
-    threshold_index = min(len(candidates) - 1, max(top_k - 1, top_k * 3 - 1))
-    minimum_score = candidates[threshold_index].score
-
-    while len(selected) < min(top_k, len(candidates)):
-        eligible = [item for item in remaining if item.score >= minimum_score]
-        if not eligible:
-            eligible = remaining
-        route_counts: defaultdict[str, int] = defaultdict(int)
-        for item in selected:
-            for route, _ in item.route_ranks:
-                route_counts[route] += 1
-        choice = min(
-            eligible,
-            key=lambda item: (
-                min((route_counts[route] for route, _ in item.route_ranks), default=0),
-                -item.score,
-                item.product_id,
-            ),
-        )
-        selected.append(choice)
-        remaining.remove(choice)
-    return tuple(item.product_id for item in selected)
+    return tuple(item.product_id for item in candidates[:top_k])
 
 
 class CatalogRetriever:
@@ -490,13 +523,27 @@ class CatalogRetriever:
         route_ranks: defaultdict[str, list[tuple[str, int]]] = defaultdict(list)
         for route in routes:
             for rank, product_id in enumerate(self._run_route(route), start=1):
-                if product_id not in scores and len(scores) >= CANDIDATE_LIMIT:
-                    continue
                 scores[product_id] += route.weight / (RRF_OFFSET + rank)
                 route_ranks[product_id].append((route.name, rank))
 
         if not scores:
             return self._fallback_result(top_k)
+        if len(scores) > CANDIDATE_LIMIT:
+            retained = set(
+                sorted(scores, key=lambda item: (-scores[item], item))[
+                    :CANDIDATE_LIMIT
+                ]
+            )
+            scores = defaultdict(
+                float, {product_id: scores[product_id] for product_id in retained}
+            )
+            route_ranks = defaultdict(
+                list,
+                {
+                    product_id: route_ranks[product_id]
+                    for product_id in retained
+                },
+            )
 
         latest_phrase = " ".join(lexical_terms([latest_message]))
         state_weight = 0.15 if _is_override(latest_message) else 1.0

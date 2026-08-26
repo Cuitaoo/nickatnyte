@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from starter.retrieval import (
     MAX_PROFILE_BOOST,
@@ -12,6 +13,7 @@ from starter.retrieval import (
     CatalogRetriever,
     RankedCandidate,
     SearchResult,
+    _attribute_signature,
     select_diverse_recommendations,
 )
 from starter.state import ShoppingState
@@ -291,6 +293,52 @@ class RetrievalTest(unittest.TestCase):
 
         self.assertEqual(selected[:6], tuple(f"P{index}" for index in range(6)))
         self.assertIn("P9", selected[6:])
+
+    def test_diversity_never_ejects_a_strict_top_ten_candidate(self) -> None:
+        candidates = tuple(
+            RankedCandidate(
+                product_id=f"P{index}",
+                score=10.0 - index * 0.1,
+                route_ranks=(("category" if index < 10 else "feature_use_case", index + 1),),
+            )
+            for index in range(12)
+        )
+
+        selected = select_diverse_recommendations(candidates, 10)
+
+        self.assertEqual(selected, tuple(f"P{index}" for index in range(10)))
+
+    def test_late_route_can_compete_after_candidate_pool_reaches_cap(self) -> None:
+        state = replace(ShoppingState.new("s", {}), category="boots")
+
+        def route_results(route) -> list[str]:
+            if route.name == "category":
+                return ["SYNTH_BOOT", "COTTON_SHIRT"]
+            if route.name == "latest_message":
+                return ["LEATHER_BOOT"]
+            return []
+
+        with (
+            patch("starter.retrieval.CANDIDATE_LIMIT", 2),
+            patch.object(self.retriever, "_run_route", side_effect=route_results),
+        ):
+            result = self.retriever.search(state, "leather winter boot", 2)
+
+        self.assertIn("LEATHER_BOOT", {item.product_id for item in result.candidates})
+
+    def test_generic_feature_words_do_not_create_fake_disagreement(self) -> None:
+        product = {
+            "title": "everyday shoe",
+            "categories": "women shoes",
+            "features": "made in the usa or imported",
+            "details": "",
+            "store": "example",
+            "description": "standard item",
+            "corpus": "everyday shoe made in the usa or imported",
+            "price": None,
+        }
+
+        self.assertEqual(_attribute_signature(product, "feature"), "")
 
     def test_profile_boost_stays_below_a_single_route_hit(self) -> None:
         """The profile is a tie-breaker, so it must never outweigh lexical evidence.

@@ -37,6 +37,11 @@ MATERIALS = (
     "fabric",
 )
 USE_CASES = ("hiking", "running", "gym", "winter", "outdoor", "work", "walking")
+ATTRIBUTE_CONSTRAINT_RE = re.compile(
+    r"^(?:rubber|textile|synthetic|leather|foam|eva)?\s*"
+    r"(?:sole|outsole|upper|closure|lining|footbed|heel|strap|sleeve)$",
+    re.IGNORECASE,
+)
 FALLBACK_STOPWORDS = frozenset(
     {
         "a",
@@ -102,6 +107,16 @@ def _append_unique(values: list[str], value: str) -> None:
         values.append(value)
 
 
+def _looks_like_attribute_constraint(value: str) -> bool:
+    normalized = normalize_value(value)
+    return (
+        normalized in COLORS
+        or normalized in MATERIALS
+        or normalized in USE_CASES
+        or bool(ATTRIBUTE_CONSTRAINT_RE.fullmatch(normalized))
+    )
+
+
 def apply_preference_patch(
     state: ShoppingState, patch: PreferencePatch
 ) -> ShoppingState:
@@ -115,8 +130,8 @@ def apply_preference_patch(
     previous_ask_attribute = state.previous_ask_attribute
     latest_recommendations = state.latest_recommendations
 
+    patch_category = normalize_value(patch.category)
     if patch.reset_product_preferences:
-        category = None
         preferences.clear()
         removed.clear()
         no_preference.clear()
@@ -161,7 +176,10 @@ def apply_preference_patch(
     if patch.intent_mode != "unchanged":
         intent_mode = patch.intent_mode
 
-    patch_category = normalize_value(patch.category)
+    if patch.reset_product_preferences and _looks_like_attribute_constraint(
+        patch_category
+    ):
+        patch_category = "unchanged"
     if patch_category and patch_category != "unchanged":
         category = patch_category
         no_preference.discard("category")

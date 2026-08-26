@@ -100,6 +100,41 @@ class PreferenceUpdateTest(unittest.TestCase):
         self.assertEqual(updated.latest_recommendations, ())
         self.assertEqual(updated.user_profile, profile)
 
+    def test_reset_without_a_new_category_preserves_product_type(self) -> None:
+        state = replace(
+            ShoppingState.new("s1", {}),
+            category="accessories belts",
+            preferences={"feature": ("hand wash only",)},
+        )
+
+        updated = apply_preference_patch(
+            state,
+            PreferencePatch(
+                reset_product_preferences=True,
+                set_preferences=[PreferenceValue(attribute="material", value="nylon")],
+            ),
+        )
+
+        self.assertEqual(updated.category, "accessories belts")
+        self.assertEqual(updated.preferences, {"material": ("nylon",)})
+
+    def test_fallback_treats_attribute_override_as_preference_not_category(self) -> None:
+        state = replace(
+            ShoppingState.new("s1", {}),
+            category="accessories belts",
+            search_terms=("hand", "wash"),
+        )
+
+        patch = parse_preference_fallback(
+            "Actually, ignore my earlier preference. What I need is: nylon.",
+            state,
+        )
+        updated = apply_preference_patch(state, patch)
+
+        self.assertTrue(patch.reset_product_preferences)
+        self.assertEqual(updated.category, "accessories belts")
+        self.assertEqual(updated.preferences["material"], ("nylon",))
+
     def test_no_preference_clears_active_attribute(self) -> None:
         state = replace(
             ShoppingState.new("s1", {}), preferences={"color": ("red",)}
