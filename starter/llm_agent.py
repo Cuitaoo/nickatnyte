@@ -31,7 +31,8 @@ Set reset_product_preferences=true only for a clear product-intent override.
 Use unchanged for intent_mode and category when the message does not update them.
 Normalize concise search terms. Never create, request, or return product IDs.
 Allowed attributes are category, material, color, size, style, brand, budget,
-feature, use_case, and other."""
+feature, use_case, and other.
+Infer confirmed preferences only from shopper messages; no general profile is provided."""
 
 
 class InvalidInterpretation(RuntimeError):
@@ -191,16 +192,9 @@ class PreferenceInterpreter:
 
     def _call_model(self, state: PreferenceWorkflowState) -> dict:
         shopping_state = state["shopping_state"]
-        profile = shopping_state.user_profile
         payload = {
             "latest_shopper_message": state["latest_user_message"],
             "current_state": shopping_state.to_prompt_dict(),
-            "profile": {
-                "summary": str(profile.get("summary", "")),
-                "preference_tags": [
-                    str(value) for value in profile.get("preference_tags", [])
-                ],
-            },
         }
         response = self._bound_model.invoke(
             [

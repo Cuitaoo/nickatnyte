@@ -70,6 +70,36 @@ class PreferenceUpdateTest(unittest.TestCase):
         self.assertEqual(updated.no_preference_attributes, frozenset())
         self.assertEqual(updated.search_terms, ())
 
+    def test_override_clears_question_and_recommendation_context(self) -> None:
+        profile = {"summary": "likes comfort", "preference_tags": ["durable"]}
+        state = replace(
+            ShoppingState.new("s1", profile),
+            category="shoes",
+            preferences={"material": ("leather",)},
+            removed_preferences={"color": ("red",)},
+            no_preference_attributes=frozenset({"brand"}),
+            search_terms=("trail",),
+            asked_attributes=("material", "color"),
+            previous_ask_attribute="color",
+            latest_recommendations=("OLD_PRODUCT",),
+        )
+
+        updated = apply_preference_patch(
+            state,
+            PreferencePatch(
+                reset_product_preferences=True,
+                category="earrings",
+                search_terms=["silver"],
+            ),
+        )
+
+        self.assertEqual(updated.category, "earrings")
+        self.assertEqual(updated.preferences, {})
+        self.assertEqual(updated.asked_attributes, ())
+        self.assertIsNone(updated.previous_ask_attribute)
+        self.assertEqual(updated.latest_recommendations, ())
+        self.assertEqual(updated.user_profile, profile)
+
     def test_no_preference_clears_active_attribute(self) -> None:
         state = replace(
             ShoppingState.new("s1", {}), preferences={"color": ("red",)}
