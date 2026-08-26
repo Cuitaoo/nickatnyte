@@ -8,6 +8,7 @@ from pathlib import Path
 from starter.agent import Agent
 from starter.llm_agent import Interpretation, InvalidInterpretation
 from starter.preference_tool import PreferencePatch, PreferenceValue, apply_preference_patch
+from starter.state import ALLOWED_PREFERENCE_ATTRIBUTES
 
 
 CATALOG = [
@@ -202,6 +203,44 @@ class AgentIntegrationTest(unittest.TestCase):
         self.assertEqual(len(identifiers), len(set(identifiers)))
         self.assertTrue(set(identifiers) <= self.catalog_ids)
         self.assertIsNone(response["ask_attribute"])
+
+
+    def test_intent_override_clears_old_questions_and_recommendations(self) -> None:
+        interpreter = QueueInterpreter(
+            [
+                PreferencePatch(
+                    category="shoes",
+                    set_preferences=[PreferenceValue(attribute="material", value="leather")],
+                ),
+                PreferencePatch(
+                    reset_product_preferences=True,
+                    category="shirts",
+                    set_preferences=[PreferenceValue(attribute="color", value="red")],
+                ),
+            ]
+        )
+        agent = Agent(self.catalog_path, interpreter=interpreter)
+        self.addCleanup(agent.close)
+        agent.reset("s", {"summary": "likes comfort", "preference_tags": ["comfort"]})
+
+        first = agent.respond("s", "leather shoes", 1, 10)
+        second = agent.respond("s", "Actually, I need a red shirt instead", 2, 10)
+        state = agent.session_state("s")
+
+        self.assertEqual(state.category, "shirts")
+        self.assertEqual(state.preferences, {"color": ("red",)})
+        self.assertNotIn(first["ask_attribute"], state.asked_attributes[:-1])
+        self.assertEqual(second["recommendations"][0]["parent_asin"], "RED_SHIRT")
+
+    def test_agent_passes_candidate_diagnostics_to_question_policy(self) -> None:
+        agent = Agent(self.catalog_path, interpreter=None)
+        self.addCleanup(agent.close)
+        agent.reset("s", {"summary": "", "preference_tags": []})
+
+        response = agent.respond("s", "running shoes for wet weather", 1, 10)
+
+        self.assertIn(response["ask_attribute"], ALLOWED_PREFERENCE_ATTRIBUTES | {None})
+        self.assertNotEqual(response["ask_attribute"], "material")
 
 
 if __name__ == "__main__":
