@@ -216,6 +216,138 @@ def _route_specs(state: ShoppingState, latest_message: str) -> tuple[_RouteSpec,
     )
 
 
+CATEGORY_BOOST = 1.8
+CONFIRMED_ATTRIBUTE_BOOST = 2.4
+EXACT_PHRASE_BOOST = 1.5
+REMOVED_ATTRIBUTE_PENALTY = 4.0
+MAX_PROFILE_BOOST = 0.15
+PROFILE_TERM_BOOST = 0.025
+DIAGNOSTIC_POOL = 100
+
+ATTRIBUTE_LEXICONS = {
+    "material": frozenset(
+        {
+            "cotton",
+            "polyester",
+            "nylon",
+            "leather",
+            "wool",
+            "spandex",
+            "silk",
+            "rayon",
+            "fabric",
+            "synthetic",
+        }
+    ),
+    "color": frozenset(
+        {
+            "black",
+            "white",
+            "blue",
+            "red",
+            "pink",
+            "green",
+            "brown",
+            "gray",
+            "grey",
+            "purple",
+            "yellow",
+            "orange",
+        }
+    ),
+    "use_case": frozenset(
+        {
+            "hiking",
+            "running",
+            "gym",
+            "winter",
+            "outdoor",
+            "work",
+            "walking",
+            "travel",
+            "marathon",
+        }
+    ),
+}
+ATTRIBUTE_RELEVANCE_PRIORS = {
+    "category": 0.75,
+    "feature": 0.85,
+    "use_case": 0.80,
+    "style": 0.65,
+    "material": 0.65,
+    "color": 0.55,
+    "size": 0.50,
+    "brand": 0.30,
+    "budget": 0.30,
+    "other": 0.0,
+}
+
+
+def _attribute_text(product: dict[str, Any], attribute: str) -> str:
+    if attribute == "category":
+        return product["categories"]
+    if attribute in {"material", "color", "size"}:
+        return f"{product['title']} {product['details']} {product['features']}"
+    if attribute == "style":
+        return f"{product['title']} {product['categories']} {product['details']}"
+    if attribute == "brand":
+        return f"{product['store']} {product['details']}"
+    if attribute == "feature":
+        return f"{product['features']} {product['details']} {product['description']}"
+    if attribute == "use_case":
+        return f"{product['categories']} {product['features']} {product['description']}"
+    return product["corpus"]
+
+
+def _attribute_signature(product: dict[str, Any], attribute: str) -> str:
+    if attribute in ATTRIBUTE_LEXICONS:
+        tokens = {token.lower() for token in TOKEN_RE.findall(_attribute_text(product, attribute))}
+        return " ".join(sorted(ATTRIBUTE_LEXICONS[attribute] & tokens))
+    if attribute == "budget":
+        price = product["price"]
+        return "" if price is None else f"band{int(price // 25)}"
+    return " ".join(lexical_terms([_attribute_text(product, attribute)])[:4])
+
+
+def _profile_terms(state: ShoppingState) -> list[str]:
+    profile = state.user_profile or {}
+    values = [str(profile.get("summary", ""))]
+    values.extend(str(tag) for tag in profile.get("preference_tags", []) or [])
+    return lexical_terms(values, limit=16)
+
+
+def select_diverse_recommendations(
+    candidates: tuple[RankedCandidate, ...], top_k: int
+) -> tuple[str, ...]:
+    if top_k <= 0 or not candidates:
+        return ()
+    locked_count = min(6, top_k, len(candidates))
+    selected = list(candidates[:locked_count])
+    remaining = list(candidates[locked_count:])
+    threshold_index = min(len(candidates) - 1, max(top_k - 1, top_k * 3 - 1))
+    minimum_score = candidates[threshold_index].score
+
+    while len(selected) < min(top_k, len(candidates)):
+        eligible = [item for item in remaining if item.score >= minimum_score]
+        if not eligible:
+            eligible = remaining
+        route_counts: defaultdict[str, int] = defaultdict(int)
+        for item in selected:
+            for route, _ in item.route_ranks:
+                route_counts[route] += 1
+        choice = min(
+            eligible,
+            key=lambda item: (
+                min((route_counts[route] for route, _ in item.route_ranks), default=0),
+                -item.score,
+                item.product_id,
+            ),
+        )
+        selected.append(choice)
+        remaining.remove(choice)
+    return tuple(item.product_id for item in selected)
+
+
 class CatalogRetriever:
     def __init__(self, catalog_path: str | Path) -> None:
         self.catalog_path = Path(catalog_path)
@@ -253,6 +385,10 @@ class CatalogRetriever:
                 self.metadata[parent_asin] = {
                     "title": fields["title"].lower(),
                     "categories": fields["categories"].lower(),
+                    "features": fields["features"].lower(),
+                    "details": fields["details"].lower(),
+                    "store": fields["store"].lower(),
+                    "description": fields["description"].lower(),
                     "corpus": corpus,
                     "price": self._number(product.get("price")),
                     "average_rating": self._number(product.get("average_rating")) or 0.0,
@@ -358,43 +494,94 @@ class CatalogRetriever:
 
         latest_phrase = " ".join(lexical_terms([latest_message]))
         state_weight = 0.15 if _is_override(latest_message) else 1.0
+        profile_terms = _profile_terms(state)
+        components: dict[str, defaultdict[str, float]] = {}
+        matched: dict[str, set[str]] = {}
         for product_id in list(scores):
             product = self.metadata[product_id]
-            corpus = product["corpus"]
-            title_and_category = f"{product['title']} {product['categories']}"
-            scores[product_id] += 0.12 * max(0, len(route_ranks[product_id]) - 1)
+            parts: defaultdict[str, float] = defaultdict(float)
+            parts["fusion"] = scores[product_id]
+            parts["fusion"] += 0.12 * max(0, len(route_ranks[product_id]) - 1)
+            hits: set[str] = set()
+
             if state.category and state.category.lower() in product["categories"]:
-                scores[product_id] += 1.8 * state_weight
+                parts["category"] += CATEGORY_BOOST * state_weight
+            title_and_category = f"{product['title']} {product['categories']}"
             if latest_phrase and latest_phrase in title_and_category:
-                scores[product_id] += 1.5
+                parts["exact_phrase"] += EXACT_PHRASE_BOOST
             for attribute, values in state.preferences.items():
                 for value in values:
                     if self._preference_matches(attribute, value, product):
-                        scores[product_id] += 2.4 * state_weight
-            for values in state.removed_preferences.values():
+                        parts[f"preference:{attribute}"] += (
+                            CONFIRMED_ATTRIBUTE_BOOST * state_weight
+                        )
+                        hits.add(attribute)
+            for attribute, values in state.removed_preferences.items():
                 for value in values:
-                    if value in corpus:
-                        scores[product_id] -= 3.0
-            scores[product_id] += min(product["average_rating"], 5.0) * 0.002
-            scores[product_id] += math.log1p(product["rating_number"]) * 0.0002
+                    if self._preference_matches(attribute, value, product):
+                        parts[f"removed:{attribute}"] -= REMOVED_ATTRIBUTE_PENALTY
+            if profile_terms:
+                corpus = product["corpus"]
+                matched_terms = sum(1 for term in profile_terms if term in corpus)
+                if matched_terms:
+                    parts["profile"] += min(
+                        MAX_PROFILE_BOOST, PROFILE_TERM_BOOST * matched_terms
+                    )
+            parts["rating"] += min(product["average_rating"], 5.0) * 0.002
+            parts["rating_count"] += math.log1p(product["rating_number"]) * 0.0002
+
+            components[product_id] = parts
+            matched[product_id] = hits
+            scores[product_id] = sum(parts.values())
 
         candidates = tuple(
             RankedCandidate(
                 product_id=product_id,
                 score=scores[product_id],
                 route_ranks=tuple(sorted(route_ranks[product_id])),
+                matched_attributes=frozenset(matched[product_id]),
+                score_components=tuple(
+                    sorted(
+                        (key, value)
+                        for key, value in components[product_id].items()
+                        if value
+                    )
+                ),
             )
-            for product_id in sorted(
-                scores, key=lambda item: (-scores[item], item)
-            )
+            for product_id in sorted(scores, key=lambda item: (-scores[item], item))
         )
         return SearchResult(
-            recommendations=tuple(
-                item.product_id for item in candidates[:top_k]
-            ),
+            recommendations=select_diverse_recommendations(candidates, top_k),
             candidates=candidates,
-            diagnostics={},
+            diagnostics=self._diagnostics(candidates),
         )
+
+    def _diagnostics(
+        self, candidates: tuple[RankedCandidate, ...]
+    ) -> dict[str, AttributeDiagnostic]:
+        pool = candidates[:DIAGNOSTIC_POOL]
+        diagnostics: dict[str, AttributeDiagnostic] = {}
+        if not pool:
+            return diagnostics
+        for attribute, prior in ATTRIBUTE_RELEVANCE_PRIORS.items():
+            if attribute == "other":
+                continue
+            signatures = [
+                _attribute_signature(self.metadata[item.product_id], attribute)
+                for item in pool
+            ]
+            present = [signature for signature in signatures if signature]
+            covered = len(present)
+            coverage = covered / len(pool)
+            disagreement = min(1.0, len(set(present)) / max(2, covered))
+            relevance = min(1.0, prior + 0.15 * coverage)
+            diagnostics[attribute] = AttributeDiagnostic(
+                attribute=attribute,
+                coverage=coverage,
+                disagreement=disagreement,
+                relevance=relevance,
+            )
+        return diagnostics
 
     @staticmethod
     def _preference_matches(
@@ -408,4 +595,5 @@ class CatalogRetriever:
             budget = float(match.group(0))
             if any(term in value for term in ("under", "below", "less than", "up to")):
                 return price <= budget
-        return value.lower() in product["corpus"]
+            return False
+        return value.lower() in _attribute_text(product, attribute)
