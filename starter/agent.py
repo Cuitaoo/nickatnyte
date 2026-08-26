@@ -1,78 +1,58 @@
 from __future__ import annotations
 
-import json
-import re
-import sqlite3
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
+
+from starter.llm_agent import Interpretation, PreferenceInterpreter
+from starter.preference_tool import apply_preference_patch, parse_preference_fallback
+from starter.questions import choose_clarification
+from starter.retrieval import CatalogRetriever
+from starter.state import ShoppingState
 
 
-TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
-STOPWORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
-    "i", "in", "is", "it", "me", "my", "of", "on", "or", "please", "some",
-    "that", "the", "this", "to", "want", "with", "would", "you", "looking",
-}
-
-
-def _text(value: object) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, dict):
-        return " ".join(f"{key} {item}" for key, item in value.items())
-    if isinstance(value, list):
-        return " ".join(str(item) for item in value)
-    return str(value)
-
-
-def _terms(text: str) -> list[str]:
-    return [
-        token.lower()
-        for token in TOKEN_RE.findall(text)
-        if len(token) > 1 and token.lower() not in STOPWORDS
-    ]
+_AUTO_INTERPRETER = object()
 
 
 class Agent:
-    """Editable weak baseline: stateless BM25 retrieval with no LLM dependency."""
+    """Conversational shopping agent with LLM-assisted preference memory."""
 
-    def __init__(self, catalog_path: str | Path = "data/catalog.jsonl") -> None:
+    def __init__(
+        self,
+        catalog_path: str | Path = "data/catalog.jsonl",
+        *,
+        interpreter: object = _AUTO_INTERPRETER,
+        openai_enabled: bool | None = None,
+    ) -> None:
         self.catalog_path = Path(catalog_path)
-        self.connection = sqlite3.connect(":memory:")
-        self._sessions: set[str] = set()
-        self._build_index()
+        self.retriever = CatalogRetriever(self.catalog_path)
+        self._sessions: dict[str, ShoppingState] = {}
+        if interpreter is not _AUTO_INTERPRETER:
+            self.interpreter = interpreter
+        elif openai_enabled is False:
+            self.interpreter = None
+        else:
+            self.interpreter = PreferenceInterpreter.from_environment()
 
-    def _build_index(self) -> None:
-        cursor = self.connection.cursor()
-        cursor.execute(
-            "CREATE VIRTUAL TABLE products USING fts5("
-            "parent_asin UNINDEXED, title, categories, features, details, store, description, "
-            "tokenize='unicode61 remove_diacritics 2')"
-        )
-        batch: list[tuple[str, str, str, str, str, str, str]] = []
-        with self.catalog_path.open(encoding="utf-8") as handle:
-            for line in handle:
-                product = json.loads(line)
-                batch.append(
-                    (
-                        str(product["parent_asin"]),
-                        _text(product.get("title")),
-                        _text(product.get("categories")),
-                        _text(product.get("features")),
-                        _text(product.get("details")),
-                        _text(product.get("store")),
-                        _text(product.get("description")),
-                    )
-                )
-                if len(batch) >= 1000:
-                    cursor.executemany("INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?)", batch)
-                    batch.clear()
-        if batch:
-            cursor.executemany("INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?)", batch)
-        self.connection.commit()
+    def close(self) -> None:
+        self.retriever.close()
 
     def reset(self, session_id: str, user_profile: dict) -> None:
-        # The profile is anonymized and may be used for personalization.
-        self._sessions.add(session_id)
+        if not session_id:
+            raise ValueError("session_id must not be blank")
+        self._sessions[session_id] = ShoppingState.new(session_id, user_profile)
+        reset_method = getattr(self.interpreter, "reset", None)
+        if callable(reset_method):
+            try:
+                reset_method(session_id)
+            except Exception:
+                pass
+
+    def session_state(self, session_id: str) -> ShoppingState:
+        try:
+            return self._sessions[session_id]
+        except KeyError as exc:
+            raise RuntimeError("reset must be called before respond") from exc
 
     def respond(
         self,
@@ -81,22 +61,74 @@ class Agent:
         turn: int,
         top_k: int,
     ) -> dict:
-        if session_id not in self._sessions:
-            raise RuntimeError("reset must be called before respond")
-        unique_terms = list(dict.fromkeys(_terms(user_message)))[:40]
-        expression = " OR ".join(f'"{term}"' for term in unique_terms)
-        if not expression:
-            recommendations: list[dict] = []
+        state = self.session_state(session_id)
+        prompt_tokens = 0
+        completion_tokens = 0
+
+        if self.interpreter is not None:
+            try:
+                interpretation = self.interpreter.interpret(user_message, state)
+                state, prompt_tokens, completion_tokens = self._validated_interpretation(
+                    session_id, interpretation
+                )
+            except Exception:
+                state = self._fallback_state(user_message, state)
         else:
-            rows = self.connection.execute(
-                "SELECT parent_asin FROM products WHERE products MATCH ? "
-                "ORDER BY bm25(products, 0.0, 6.0, 4.0, 2.5, 2.5, 1.5, 1.0) LIMIT ?",
-                (expression, top_k),
-            ).fetchall()
-            recommendations = [{"parent_asin": str(row[0])} for row in rows]
+            state = self._fallback_state(user_message, state)
+
+        requested_count = min(10, max(0, int(top_k)))
+        try:
+            identifiers = self.retriever.search(
+                state, str(user_message), requested_count
+            )
+        except Exception:
+            identifiers = []
+        identifiers = list(dict.fromkeys(str(value) for value in identifiers))[
+            :requested_count
+        ]
+
+        message, ask_attribute = choose_clarification(state, int(turn))
+        asked_attributes = list(state.asked_attributes)
+        if ask_attribute and ask_attribute not in asked_attributes:
+            asked_attributes.append(ask_attribute)
+        state = replace(
+            state,
+            asked_attributes=tuple(asked_attributes),
+            previous_ask_attribute=ask_attribute,
+            latest_recommendations=tuple(identifiers),
+            turn=int(turn),
+            prompt_tokens=state.prompt_tokens + prompt_tokens,
+            completion_tokens=state.completion_tokens + completion_tokens,
+        )
+        self._sessions[session_id] = state
+
         return {
-            "message": "Here are the closest matches I found.",
-            "ask_attribute": None,
-            "recommendations": recommendations,
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+            "message": message,
+            "ask_attribute": ask_attribute,
+            "recommendations": [
+                {"parent_asin": parent_asin} for parent_asin in identifiers
+            ],
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+            },
         }
+
+    @staticmethod
+    def _fallback_state(message: str, state: ShoppingState) -> ShoppingState:
+        patch = parse_preference_fallback(str(message), state)
+        return apply_preference_patch(state, patch)
+
+    @staticmethod
+    def _validated_interpretation(
+        session_id: str, interpretation: Any
+    ) -> tuple[ShoppingState, int, int]:
+        if not isinstance(interpretation, Interpretation):
+            raise TypeError("interpreter returned an invalid result")
+        if interpretation.state.session_id != session_id:
+            raise ValueError("interpreter returned state for another session")
+        return (
+            interpretation.state,
+            max(0, int(interpretation.prompt_tokens)),
+            max(0, int(interpretation.completion_tokens)),
+        )
