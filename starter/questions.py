@@ -1,21 +1,10 @@
 from __future__ import annotations
 
+from starter.retrieval import AttributeDiagnostic
 from starter.state import ShoppingState
 
 
 RECOMMENDATION_MESSAGE = "Here are the closest matches I found."
-ATTRIBUTE_PRIORITY = (
-    "category",
-    "material",
-    "color",
-    "size",
-    "style",
-    "brand",
-    "budget",
-    "feature",
-    "use_case",
-    "other",
-)
 QUESTION_TEMPLATES = {
     "category": "What kind of product are you looking for?",
     "material": "Do you have a material preference?",
@@ -30,8 +19,33 @@ QUESTION_TEMPLATES = {
 }
 
 
+QUESTION_PRIORS = {
+    "category": 0.20,
+    "feature": 0.30,
+    "use_case": 0.27,
+    "style": 0.22,
+    "material": 0.20,
+    "color": 0.15,
+    "size": 0.12,
+    "brand": 0.05,
+    "budget": 0.05,
+}
+MIN_SPECIFIC_QUESTION_SCORE = 0.28
+
+
+def _question_score(attribute: str, item: AttributeDiagnostic) -> float:
+    return (
+        0.45 * item.disagreement
+        + 0.25 * item.coverage
+        + 0.20 * item.relevance
+        + QUESTION_PRIORS[attribute]
+    )
+
+
 def choose_clarification(
-    state: ShoppingState, turn: int
+    state: ShoppingState,
+    turn: int,
+    diagnostics: dict[str, AttributeDiagnostic],
 ) -> tuple[str, str | None]:
     if turn >= 10:
         return RECOMMENDATION_MESSAGE, None
@@ -42,7 +56,36 @@ def choose_clarification(
     if state.category:
         excluded.add("category")
 
-    for attribute in ATTRIBUTE_PRIORITY:
-        if attribute not in excluded:
-            return QUESTION_TEMPLATES[attribute], attribute
+    category_diagnostic = diagnostics.get("category")
+    if (
+        "category" not in excluded
+        and category_diagnostic is not None
+        and category_diagnostic.coverage >= 0.40
+        and category_diagnostic.disagreement >= 0.35
+    ):
+        return QUESTION_TEMPLATES["category"], "category"
+
+    scored: list[tuple[float, str]] = []
+    for attribute, item in diagnostics.items():
+        if (
+            attribute not in QUESTION_PRIORS
+            or attribute in excluded
+            or attribute == "category"
+        ):
+            continue
+        if item.coverage < 0.10:
+            continue
+        if attribute in {"brand", "budget"} and (
+            item.coverage < 0.35 or item.disagreement < 0.15
+        ):
+            continue
+        scored.append((_question_score(attribute, item), attribute))
+
+    if scored:
+        best_score, best_attribute = max(scored, key=lambda pair: (pair[0], pair[1]))
+        if best_score >= MIN_SPECIFIC_QUESTION_SCORE:
+            return QUESTION_TEMPLATES[best_attribute], best_attribute
+
+    if "other" not in excluded:
+        return QUESTION_TEMPLATES["other"], "other"
     return RECOMMENDATION_MESSAGE, None
