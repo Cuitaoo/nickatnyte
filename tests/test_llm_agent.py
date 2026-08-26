@@ -83,9 +83,12 @@ class PreferenceInterpreterTest(unittest.TestCase):
         self.assertEqual(model.calls, 1)
         self.assertEqual(model.bind_arguments["tool_choice"], "update_user_preferences")
         self.assertTrue(model.bind_arguments["strict"])
-        prompt_text = " ".join(message.content for message in model.invocations[0])
-        self.assertIn("likes comfort", prompt_text)
+        prompt_text = " ".join(
+            str(message.content) for message in model.invocations[0]
+        )
         self.assertIn("blue running shoes", prompt_text)
+        self.assertNotIn("likes comfort", prompt_text)
+        self.assertNotIn("fit", prompt_text)
 
     def test_existing_state_is_available_to_the_tool(self) -> None:
         response = AIMessage(

@@ -111,12 +111,19 @@ def apply_preference_patch(
     no_preference = set(state.no_preference_attributes)
     search_terms = list(state.search_terms)
 
+    asked_attributes = state.asked_attributes
+    previous_ask_attribute = state.previous_ask_attribute
+    latest_recommendations = state.latest_recommendations
+
     if patch.reset_product_preferences:
         category = None
         preferences.clear()
         removed.clear()
         no_preference.clear()
         search_terms.clear()
+        asked_attributes = ()
+        previous_ask_attribute = None
+        latest_recommendations = ()
 
     for removal in patch.remove_preferences:
         attribute = normalize_value(removal.attribute)
@@ -190,6 +197,9 @@ def apply_preference_patch(
         removed_preferences={key: tuple(values) for key, values in removed.items()},
         no_preference_attributes=frozenset(no_preference),
         search_terms=tuple(search_terms),
+        asked_attributes=asked_attributes,
+        previous_ask_attribute=previous_ask_attribute,
+        latest_recommendations=latest_recommendations,
     )
 
 
