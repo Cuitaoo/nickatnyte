@@ -8,6 +8,7 @@ from pathlib import Path
 
 from starter.retrieval import (
     MAX_PROFILE_BOOST,
+    RRF_OFFSET,
     CatalogRetriever,
     RankedCandidate,
     SearchResult,
@@ -290,6 +291,19 @@ class RetrievalTest(unittest.TestCase):
 
         self.assertEqual(selected[:6], tuple(f"P{index}" for index in range(6)))
         self.assertIn("P9", selected[6:])
+
+    def test_profile_boost_stays_below_a_single_route_hit(self) -> None:
+        """The profile is a tie-breaker, so it must never outweigh lexical evidence.
+
+        Fusion contributes at most ``weight / (RRF_OFFSET + rank)`` per route. If
+        the profile boost exceeds what one top-ranked route hit is worth, a
+        product nothing matched can outrank the best lexical match, which is the
+        opposite of a tie-breaker.
+        """
+        strongest_route_weight = 2.20
+        best_single_route_hit = strongest_route_weight / (RRF_OFFSET + 1)
+
+        self.assertLess(MAX_PROFILE_BOOST, best_single_route_hit)
 
 
 if __name__ == "__main__":

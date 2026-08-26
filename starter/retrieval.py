@@ -92,7 +92,11 @@ OVERRIDE_RE = re.compile(
 )
 ROUTE_LIMIT = 150
 CANDIDATE_LIMIT = 500
-RRF_OFFSET = 60.0
+# Fusion contributes at most ``weight / (RRF_OFFSET + rank)`` per route. A large
+# offset flattens that band until the additive boosts below decide every ordering
+# and BM25 rank stops mattering, so keep it small enough that lexical evidence
+# still separates candidates that share the same boosts.
+RRF_OFFSET = 8.0
 
 
 @dataclass(frozen=True)
@@ -220,8 +224,10 @@ CATEGORY_BOOST = 1.8
 CONFIRMED_ATTRIBUTE_BOOST = 2.4
 EXACT_PHRASE_BOOST = 1.5
 REMOVED_ATTRIBUTE_PENALTY = 4.0
-MAX_PROFILE_BOOST = 0.15
-PROFILE_TERM_BOOST = 0.025
+# The general profile only breaks ties, so its total contribution must stay below
+# what a single top-ranked route hit is worth (see the regression test).
+MAX_PROFILE_BOOST = 0.03
+PROFILE_TERM_BOOST = 0.005
 DIAGNOSTIC_POOL = 100
 
 ATTRIBUTE_LEXICONS = {
