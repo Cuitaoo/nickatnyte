@@ -674,5 +674,7 @@ class CatalogRetriever:
             budget = float(match.group(0))
             if any(term in value for term in ("under", "below", "less than", "up to")):
                 return price <= budget
+            if any(term in value for term in ("around", "about", "approximately")):
+                return 0.75 * budget <= price <= 1.25 * budget
             return False
         return value.lower() in _attribute_text(product, attribute)

@@ -373,5 +373,29 @@ class RetrievalTest(unittest.TestCase):
         self.assertLess(MAX_PROFILE_BOOST, best_single_route_hit)
 
 
+class BudgetMatchTest(unittest.TestCase):
+    def test_around_budget_matches_price_band(self) -> None:
+        product = {"price": 55.0}
+        self.assertTrue(
+            CatalogRetriever._preference_matches("budget", "around $60", product)
+        )
+        self.assertTrue(
+            CatalogRetriever._preference_matches("budget", "budget around $60", product)
+        )
+
+    def test_around_budget_rejects_far_price(self) -> None:
+        self.assertFalse(
+            CatalogRetriever._preference_matches("budget", "around $60", {"price": 200.0})
+        )
+        self.assertFalse(
+            CatalogRetriever._preference_matches("budget", "around $60", {"price": 10.0})
+        )
+
+    def test_under_budget_still_matches(self) -> None:
+        self.assertTrue(
+            CatalogRetriever._preference_matches("budget", "under $60", {"price": 55.0})
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

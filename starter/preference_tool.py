@@ -585,12 +585,12 @@ def parse_preference_fallback(
         if re.search(rf"\b{re.escape(material)}\b", lowered):
             values.append(PreferenceValue(attribute="material", value=material))
     budget = _first_match(
-        r"\b((?:under|below|less than|up to)\s*\$?\s*\d+(?:\.\d{1,2})?)\b",
+        r"\b((?:under|below|less than|up to|around|about)\s*\$?\s*\d+(?:\.\d{1,2})?)\b",
         lowered,
     )
     if budget:
         budget = re.sub(
-            r"\b(under|below|less than|up to)\b\s*\$?\s*(\d+(?:\.\d{1,2})?)",
+            r"\b(under|below|less than|up to|around|about)\b\s*\$?\s*(\d+(?:\.\d{1,2})?)",
             r"\1 $\2",
             budget,
         )

@@ -691,5 +691,17 @@ class PreferenceUpdateTest(unittest.TestCase):
         self.assertIn("waterproof", patch.search_terms)
 
 
+class FallbackBudgetTest(unittest.TestCase):
+    def test_fallback_captures_around_budget(self) -> None:
+        state = ShoppingState.new("s", {})
+        patch = parse_preference_fallback(
+            "For that, what matters is: budget around $59.99.", state
+        )
+        budgets = [
+            item.value for item in patch.set_preferences if item.attribute == "budget"
+        ]
+        self.assertEqual(budgets, ["around $59.99"])
+
+
 if __name__ == "__main__":
     unittest.main()
