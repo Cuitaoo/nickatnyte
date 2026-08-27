@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import sqlite3
 from collections import Counter, defaultdict
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from starter.cross_encoder_reranker import CrossEncoderReranker
 from starter.state import ShoppingState
 from starter.synonyms import expand_terms
 
@@ -455,6 +457,7 @@ class CatalogRetriever:
         self.connection = sqlite3.connect(":memory:")
         self.metadata: dict[str, dict[str, Any]] = {}
         self._fallback_ids: list[str] = []
+        self.cross_encoder_reranker = CrossEncoderReranker.from_environment()
         self._build_index()
 
     def close(self) -> None:
@@ -704,6 +707,21 @@ class CatalogRetriever:
             )
             for product_id in sorted(scores, key=lambda item: (-scores[item], item))
         )
+        if self.cross_encoder_reranker is not None:
+            ranked_ids = [candidate.product_id for candidate in candidates]
+            reranked_ids = self.cross_encoder_reranker.rerank(
+                state,
+                latest_message,
+                ranked_ids,
+                dict(scores),
+                self.metadata,
+            )
+            candidate_by_id = {candidate.product_id: candidate for candidate in candidates}
+            candidates = tuple(
+                candidate_by_id[product_id]
+                for product_id in reranked_ids
+                if product_id in candidate_by_id
+            )
         return SearchResult(
             recommendations=select_diverse_recommendations(candidates, top_k),
             candidates=candidates,
