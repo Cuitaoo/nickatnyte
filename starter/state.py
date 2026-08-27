@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 
 IntentMode = Literal["buying", "browsing", "unknown"]
+EvidenceSource = Literal["unsolicited", "clarification", "correction"]
 
 ALLOWED_PREFERENCE_ATTRIBUTES = frozenset(
     {
@@ -24,6 +25,15 @@ ALLOWED_PREFERENCE_ATTRIBUTES = frozenset(
 
 
 @dataclass(frozen=True)
+class PreferenceEvidence:
+    attribute: str
+    values: tuple[str, ...] = ()
+    terms: tuple[str, ...] = ()
+    source_turn: int = 0
+    source_kind: EvidenceSource = "unsolicited"
+
+
+@dataclass(frozen=True)
 class ShoppingState:
     session_id: str
     user_profile: dict[str, Any]
@@ -33,6 +43,7 @@ class ShoppingState:
     removed_preferences: dict[str, tuple[str, ...]] = field(default_factory=dict)
     no_preference_attributes: frozenset[str] = frozenset()
     search_terms: tuple[str, ...] = ()
+    preference_evidence: tuple[PreferenceEvidence, ...] = ()
     asked_attributes: tuple[str, ...] = ()
     previous_ask_attribute: str | None = None
     latest_recommendations: tuple[str, ...] = ()

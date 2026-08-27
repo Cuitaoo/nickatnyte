@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import unittest
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 
+import starter.state as state_module
 from starter.preference_tool import (
     PreferencePatch,
     PreferenceRemoval,
@@ -14,6 +15,26 @@ from starter.state import ShoppingState
 
 
 class PreferenceUpdateTest(unittest.TestCase):
+    def test_preference_evidence_is_immutable_and_hidden_from_model_prompt(self) -> None:
+        evidence_type = getattr(state_module, "PreferenceEvidence", None)
+        self.assertIsNotNone(evidence_type)
+        evidence = evidence_type(
+            attribute="feature",
+            values=("machine washable",),
+            terms=("machine washable",),
+            source_turn=2,
+            source_kind="clarification",
+        )
+        state = replace(
+            ShoppingState.new("s1", {}),
+            preference_evidence=(evidence,),
+        )
+
+        self.assertEqual(state.preference_evidence, (evidence,))
+        self.assertNotIn("preference_evidence", state.to_prompt_dict())
+        with self.assertRaises(FrozenInstanceError):
+            evidence.source_turn = 3
+
     def test_patch_adds_normalized_values_without_mutating_old_state(self) -> None:
         state = ShoppingState.new(
             "s1", {"summary": "likes comfort", "preference_tags": ["fit"]}
