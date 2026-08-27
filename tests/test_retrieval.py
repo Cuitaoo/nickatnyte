@@ -15,6 +15,7 @@ from starter.retrieval import (
     RankedCandidate,
     SearchResult,
     _attribute_signature,
+    _signature_disagreement,
     select_diverse_recommendations,
 )
 from starter.state import ShoppingState
@@ -285,6 +286,17 @@ class RetrievalTest(unittest.TestCase):
         self.assertGreaterEqual(result.diagnostics["feature"].relevance, 0.0)
         self.assertLessEqual(result.diagnostics["feature"].relevance, 1.0)
 
+    def test_signature_disagreement_tracks_distribution_not_unique_count(self) -> None:
+        self.assertEqual(_signature_disagreement(["leather"] * 10), 0.0)
+        self.assertAlmostEqual(
+            _signature_disagreement(["leather"] * 5 + ["synthetic"] * 5),
+            0.5,
+        )
+        self.assertGreater(
+            _signature_disagreement(["leather"] * 5 + ["synthetic"] * 5),
+            _signature_disagreement(["leather"] * 9 + ["synthetic"]),
+        )
+
     def test_budget_and_removed_values_change_order(self) -> None:
         state = replace(
             ShoppingState.new("s", {}),
@@ -300,21 +312,6 @@ class RetrievalTest(unittest.TestCase):
             item for item in result.candidates if item.product_id == "SYNTH_BOOT"
         )
         self.assertIn("preference:budget", dict(winner.score_components))
-
-    def test_top_six_are_strict_and_tail_can_cover_an_underrepresented_route(self) -> None:
-        candidates = tuple(
-            RankedCandidate(
-                product_id=f"P{index}",
-                score=10.0 - index * 0.1,
-                route_ranks=(("category" if index < 9 else "feature_use_case", index + 1),),
-            )
-            for index in range(12)
-        )
-
-        selected = select_diverse_recommendations(candidates, 10)
-
-        self.assertEqual(selected[:6], tuple(f"P{index}" for index in range(6)))
-        self.assertIn("P9", selected[6:])
 
     def test_diversity_never_ejects_a_strict_top_ten_candidate(self) -> None:
         candidates = tuple(

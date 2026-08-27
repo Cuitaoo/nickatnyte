@@ -4,7 +4,7 @@ import json
 import math
 import re
 import sqlite3
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -138,6 +138,15 @@ class _RouteSpec:
 
 def _is_override(message: str) -> bool:
     return bool(OVERRIDE_RE.search(message))
+
+
+def _signature_disagreement(signatures: Iterable[str]) -> float:
+    """Return Gini impurity for the observed non-empty attribute signatures."""
+    counts = Counter(signature for signature in signatures if signature)
+    total = sum(counts.values())
+    if total <= 1:
+        return 0.0
+    return 1.0 - sum((count / total) ** 2 for count in counts.values())
 
 
 def _phrase_expression(values: Iterable[str], columns: tuple[str, ...]) -> str:
@@ -506,6 +515,10 @@ class CatalogRetriever:
             recommendations=tuple(identifiers), candidates=candidates, diagnostics={}
         )
 
+    def fallback(self, top_k: int) -> SearchResult:
+        """Return the catalog's deterministic popularity fallback."""
+        return self._fallback_result(max(0, int(top_k)))
+
     def search(
         self,
         state: ShoppingState,
@@ -639,7 +652,7 @@ class CatalogRetriever:
             present = [signature for signature in signatures if signature]
             covered = len(present)
             coverage = covered / len(pool)
-            disagreement = min(1.0, len(set(present)) / max(2, covered))
+            disagreement = _signature_disagreement(present)
             relevance = min(1.0, prior + 0.15 * coverage)
             diagnostics[attribute] = AttributeDiagnostic(
                 attribute=attribute,
