@@ -51,8 +51,27 @@ def choose_clarification(
         return RECOMMENDATION_MESSAGE, None
 
     excluded = set(state.asked_attributes)
+    # "other" harvests any undisclosed constraint, so repeat it until the
+    # shopper says there is nothing left (no_preference below).
+    excluded.discard("other")
     excluded.update(state.no_preference_attributes)
-    excluded.update(state.preferences)
+    # An attribute whose only evidence came from a correction ("what I need is
+    # cotton") was never actually asked; the shopper may still hold a more
+    # specific constraint for it, so keep it askable once.
+    correction_only = {
+        attribute
+        for attribute in state.preferences
+        if attribute not in state.asked_attributes
+        and any(item.attribute == attribute for item in state.preference_evidence)
+        and all(
+            item.source_kind == "correction"
+            for item in state.preference_evidence
+            if item.attribute == attribute
+        )
+    }
+    excluded.update(
+        attribute for attribute in state.preferences if attribute not in correction_only
+    )
     if state.category:
         excluded.add("category")
 

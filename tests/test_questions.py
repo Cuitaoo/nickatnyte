@@ -5,7 +5,11 @@ from dataclasses import replace
 
 from starter.questions import choose_clarification
 from starter.retrieval import AttributeDiagnostic
-from starter.state import ALLOWED_PREFERENCE_ATTRIBUTES, ShoppingState
+from starter.state import (
+    ALLOWED_PREFERENCE_ATTRIBUTES,
+    PreferenceEvidence,
+    ShoppingState,
+)
 
 
 def diagnostic(
@@ -150,6 +154,76 @@ class ClarificationTest(unittest.TestCase):
             choose_clarification(ShoppingState.new("s", {}), 10, broad_diagnostics()),
             ("Here are the closest matches I found.", None),
         )
+
+
+class ReAskPolicyTest(unittest.TestCase):
+    def _diag(self, attribute: str) -> AttributeDiagnostic:
+        return AttributeDiagnostic(
+            attribute=attribute, coverage=0.8, disagreement=0.6, relevance=0.8
+        )
+
+    def test_correction_only_attribute_can_be_asked(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="sweatshirt",
+            preferences={"material": ("cotton",)},
+            preference_evidence=(
+                PreferenceEvidence(
+                    attribute="material", values=("cotton",), source_kind="correction"
+                ),
+            ),
+        )
+        message, attribute = choose_clarification(
+            state, 4, {"material": self._diag("material")}
+        )
+        self.assertEqual(attribute, "material")
+
+    def test_clarified_attribute_is_not_reasked(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="sweatshirt",
+            preferences={"material": ("cotton",)},
+            asked_attributes=("material",),
+            preference_evidence=(
+                PreferenceEvidence(
+                    attribute="material",
+                    values=("cotton",),
+                    source_kind="clarification",
+                ),
+            ),
+        )
+        message, attribute = choose_clarification(
+            state, 4, {"material": self._diag("material")}
+        )
+        self.assertNotEqual(attribute, "material")
+
+    def test_unsolicited_attribute_is_not_reasked(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="sweatshirt",
+            preferences={"material": ("cotton",)},
+            preference_evidence=(
+                PreferenceEvidence(
+                    attribute="material", values=("cotton",), source_kind="unsolicited"
+                ),
+            ),
+        )
+        message, attribute = choose_clarification(
+            state, 4, {"material": self._diag("material")}
+        )
+        self.assertNotEqual(attribute, "material")
+
+    def test_other_repeats_until_no_preference(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="sweatshirt",
+            asked_attributes=("other",),
+        )
+        message, attribute = choose_clarification(state, 4, {})
+        self.assertEqual(attribute, "other")
+        exhausted = replace(state, no_preference_attributes=frozenset({"other"}))
+        message, attribute = choose_clarification(exhausted, 4, {})
+        self.assertIsNone(attribute)
 
 
 if __name__ == "__main__":

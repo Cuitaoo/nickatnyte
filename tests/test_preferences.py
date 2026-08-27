@@ -618,20 +618,23 @@ class PreferenceUpdateTest(unittest.TestCase):
                 "material",
                 "For that, what matters is: cotton; polyester.",
                 ("cotton", "polyester"),
+                (),
             ),
             (
                 "feature",
                 "For that, what matters is: button closure; machine washable.",
                 ("button closure", "machine washable"),
+                (),
             ),
             (
                 "use_case",
                 "For that, what matters is: winter hiking.",
                 ("hiking", "winter"),
+                ("winter hiking",),
             ),
         )
 
-        for attribute, message, expected_values in cases:
+        for attribute, message, expected_values, expected_terms in cases:
             with self.subTest(attribute=attribute):
                 state = replace(
                     ShoppingState.new("s1", {}),
@@ -644,13 +647,14 @@ class PreferenceUpdateTest(unittest.TestCase):
                 )
 
                 self.assertEqual(updated.preferences.get(attribute), expected_values)
-                self.assertEqual(updated.search_terms, ())
+                self.assertEqual(updated.search_terms, expected_terms)
                 self.assertEqual(
                     updated.preference_evidence,
                     (
                         PreferenceEvidence(
                             attribute=attribute,
                             values=expected_values,
+                            terms=expected_terms,
                             source_turn=2,
                             source_kind="clarification",
                         ),
@@ -717,6 +721,91 @@ class CompoundEvidenceTest(unittest.TestCase):
         )
         updated = apply_preference_patch(state, patch)
         self.assertNotIn("cotton", updated.search_terms)
+
+
+class CompoundClarificationFlowTest(unittest.TestCase):
+    def test_direct_answer_preserves_raw_compound_phrase(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}), previous_ask_attribute="material", turn=1
+        )
+        patch = parse_preference_fallback(
+            "For that, what matters is: cotton; 90% Cotton, 10% Others.", state
+        )
+        updated = apply_preference_patch(state, patch)
+        self.assertEqual(updated.preferences["material"], ("cotton",))
+        self.assertIn("90% cotton, 10% others", updated.search_terms)
+
+    def test_correction_keeps_agreeing_clarification_evidence(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="sweatshirt",
+            preferences={"material": ("cotton",)},
+            search_terms=("90% cotton, 10% others",),
+            asked_attributes=("material",),
+            preference_evidence=(
+                PreferenceEvidence(
+                    attribute="material",
+                    values=("cotton",),
+                    terms=("90% cotton, 10% others",),
+                    source_turn=2,
+                    source_kind="clarification",
+                ),
+            ),
+            turn=3,
+        )
+        patch = PreferencePatch(
+            category="cotton",
+            set_preferences=[PreferenceValue(attribute="material", value="cotton")],
+            reset_product_preferences=True,
+        )
+        updated = apply_preference_patch(state, patch)
+        self.assertIn("90% cotton, 10% others", updated.search_terms)
+        self.assertTrue(
+            any(
+                item.source_kind == "clarification"
+                and "90% cotton, 10% others" in item.terms
+                for item in updated.preference_evidence
+            )
+        )
+
+    def test_correction_retires_conflicting_clarification_evidence(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="sweatshirt",
+            preferences={"material": ("wool",)},
+            search_terms=("100% merino wool",),
+            asked_attributes=("material",),
+            preference_evidence=(
+                PreferenceEvidence(
+                    attribute="material",
+                    values=("wool",),
+                    terms=("100% merino wool",),
+                    source_turn=2,
+                    source_kind="clarification",
+                ),
+            ),
+            turn=3,
+        )
+        patch = PreferencePatch(
+            category="cotton",
+            set_preferences=[PreferenceValue(attribute="material", value="cotton")],
+            reset_product_preferences=True,
+        )
+        updated = apply_preference_patch(state, patch)
+        self.assertEqual(updated.preferences["material"], ("cotton",))
+        self.assertNotIn("100% merino wool", updated.search_terms)
+
+
+class NoAdditionalPreferenceTest(unittest.TestCase):
+    def test_no_additional_preference_reply_is_not_search_noise(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}), previous_ask_attribute="color", turn=2
+        )
+        patch = parse_preference_fallback(
+            "I don't have an additional preference for color.", state
+        )
+        self.assertEqual(patch.no_preference_attributes, ["color"])
+        self.assertEqual(patch.search_terms, [])
 
 
 class FallbackBudgetTest(unittest.TestCase):

@@ -197,11 +197,23 @@ def _classify_update(
     return "product_change"
 
 
-def _without_attributes(
-    evidence: list[PreferenceEvidence], attributes: set[str]
+def _retire_corrected(
+    evidence: list[PreferenceEvidence],
+    values_by_attribute: dict[str, tuple[str, ...]],
 ) -> tuple[list[PreferenceEvidence], list[PreferenceEvidence]]:
-    active = [item for item in evidence if item.attribute not in attributes]
-    retired = [item for item in evidence if item.attribute in attributes]
+    """Retire corrected-attribute evidence unless it is a clarification whose
+    values agree with the correction (e.g. the shopper confirmed "cotton" and
+    the correction re-asserts cotton)."""
+    active: list[PreferenceEvidence] = []
+    retired: list[PreferenceEvidence] = []
+    for item in evidence:
+        new_values = values_by_attribute.get(item.attribute)
+        if new_values is None:
+            active.append(item)
+        elif item.source_kind == "clarification" and set(item.values) & set(new_values):
+            active.append(item)
+        else:
+            retired.append(item)
     return active, retired
 
 
@@ -338,7 +350,7 @@ def apply_preference_patch(
         latest_recommendations = ()
     elif update_kind == "preference_correction":
         corrected_attributes = set(values_by_attribute)
-        evidence, retired = _without_attributes(evidence, corrected_attributes)
+        evidence, retired = _retire_corrected(evidence, values_by_attribute)
         evidence, retired_unsolicited = _retire_latest_unsolicited(
             evidence,
             corrected_attributes,
@@ -552,10 +564,10 @@ def _direct_answer_values(message: str, attribute: str) -> list[str]:
     values: list[str] = []
     for part in re.split(r"[;|]", match.group(1)):
         normalized = normalize_value(part)
-        if not normalized:
-            continue
-        for value in _canonical_preference_values(attribute, normalized):
-            _append_unique(values, value)
+        if normalized:
+            # Keep the raw part; apply_preference_patch canonicalizes and, for
+            # compound values, retains the raw phrase for exact-phrase search.
+            _append_unique(values, normalized)
     return values
 
 
@@ -613,7 +625,8 @@ def parse_preference_fallback(
 
     no_preference: list[str] = []
     no_preference_match = re.search(
-        r"(?:no|don'?t have (?:an? )?)\s*preference\s+for\s+([a-z_]+)", lowered
+        r"(?:no|don'?t have)\s+(?:an?\s+)?(?:additional\s+)?preference\s+for\s+([a-z_]+)",
+        lowered,
     )
     if no_preference_match:
         no_preference.append(no_preference_match.group(1))
