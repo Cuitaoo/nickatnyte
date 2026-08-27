@@ -46,6 +46,10 @@ ATTRIBUTE_CONSTRAINT_RE = re.compile(
     r"(?:sole|outsole|upper|closure|lining|footbed|heel|strap|sleeve)$",
     re.IGNORECASE,
 )
+DIRECT_ANSWER_RE = re.compile(
+    r"^(?:for that,?\s*)?what matters is\s*:\s*(.+)$",
+    re.IGNORECASE,
+)
 FALLBACK_STOPWORDS = frozenset(
     {
         "a",
@@ -520,6 +524,20 @@ def _first_match(pattern: str, message: str) -> str | None:
     return normalize_value(match.group(1)) if match else None
 
 
+def _direct_answer_values(message: str, attribute: str) -> list[str]:
+    match = DIRECT_ANSWER_RE.fullmatch(message.strip())
+    if not match:
+        return []
+    values: list[str] = []
+    for part in re.split(r"[;|]", match.group(1)):
+        normalized = normalize_value(part)
+        if not normalized:
+            continue
+        for value in _canonical_preference_values(attribute, normalized):
+            _append_unique(values, value)
+    return values
+
+
 def parse_preference_fallback(
     message: str, state: ShoppingState
 ) -> PreferencePatch:
@@ -580,14 +598,31 @@ def parse_preference_fallback(
         no_preference.append(no_preference_match.group(1))
     elif (
         state.previous_ask_attribute
-        and re.search(r"\b(no preference|don'?t care|use your judgment)\b", lowered)
+        and re.search(
+            r"\b(no(?: additional)? preference|don'?t care|use your judgment)\b",
+            lowered,
+        )
     ):
         no_preference.append(state.previous_ask_attribute)
 
+    direct_values: list[str] = []
+    direct_attribute = state.previous_ask_attribute
+    if (
+        direct_attribute in ALLOWED_PREFERENCE_ATTRIBUTES
+        and direct_attribute != "category"
+        and not no_preference
+    ):
+        direct_values = _direct_answer_values(lowered, direct_attribute)
+        values.extend(
+            PreferenceValue(attribute=direct_attribute, value=value)
+            for value in direct_values
+        )
+
     search_terms: list[str] = []
-    for token in TOKEN_RE.findall(lowered):
-        if len(token) > 1 and token not in FALLBACK_STOPWORDS:
-            _append_unique(search_terms, token)
+    if not direct_values and not no_preference:
+        for token in TOKEN_RE.findall(lowered):
+            if len(token) > 1 and token not in FALLBACK_STOPWORDS:
+                _append_unique(search_terms, token)
 
     return PreferencePatch(
         intent_mode=intent_mode,

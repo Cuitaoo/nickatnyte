@@ -541,6 +541,69 @@ class PreferenceUpdateTest(unittest.TestCase):
         self.assertNotIn("color", updated.preferences)
         self.assertIn("color", updated.no_preference_attributes)
 
+    def test_fallback_structures_evaluator_style_clarification_answers(self) -> None:
+        cases = (
+            (
+                "material",
+                "For that, what matters is: cotton; polyester.",
+                ("cotton", "polyester"),
+            ),
+            (
+                "feature",
+                "For that, what matters is: button closure; machine washable.",
+                ("button closure", "machine washable"),
+            ),
+            (
+                "use_case",
+                "For that, what matters is: winter hiking.",
+                ("hiking", "winter"),
+            ),
+        )
+
+        for attribute, message, expected_values in cases:
+            with self.subTest(attribute=attribute):
+                state = replace(
+                    ShoppingState.new("s1", {}),
+                    previous_ask_attribute=attribute,
+                    turn=1,
+                )
+                updated = apply_preference_patch(
+                    state,
+                    parse_preference_fallback(message, state),
+                )
+
+                self.assertEqual(updated.preferences.get(attribute), expected_values)
+                self.assertEqual(updated.search_terms, ())
+                self.assertEqual(
+                    updated.preference_evidence,
+                    (
+                        PreferenceEvidence(
+                            attribute=attribute,
+                            values=expected_values,
+                            source_turn=2,
+                            source_kind="clarification",
+                        ),
+                    ),
+                )
+
+    def test_fallback_no_additional_preference_adds_no_search_noise(self) -> None:
+        state = replace(
+            ShoppingState.new("s1", {}),
+            previous_ask_attribute="feature",
+        )
+
+        updated = apply_preference_patch(
+            state,
+            parse_preference_fallback(
+                "No additional preference; use your judgment.",
+                state,
+            ),
+        )
+
+        self.assertEqual(updated.no_preference_attributes, frozenset({"feature"}))
+        self.assertEqual(updated.search_terms, ())
+        self.assertEqual(updated.preference_evidence, ())
+
     def test_fallback_resets_state_on_explicit_intent_override(self) -> None:
         state = replace(
             ShoppingState.new("s1", {}),
