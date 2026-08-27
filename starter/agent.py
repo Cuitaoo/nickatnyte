@@ -11,11 +11,13 @@ from starter.llm_agent import (
 )
 from starter.preference_tool import apply_preference_patch, parse_preference_fallback
 from starter.questions import choose_clarification
+from starter.reranker import CandidateReranker
 from starter.retrieval import CatalogRetriever, RetrievalWeights
 from starter.state import ShoppingState
 
 
 _AUTO_INTERPRETER = object()
+_AUTO_RERANKER = object()
 
 
 class Agent:
@@ -28,6 +30,7 @@ class Agent:
         interpreter: object = _AUTO_INTERPRETER,
         openai_enabled: bool | None = None,
         weights: RetrievalWeights | None = None,
+        reranker: object = _AUTO_RERANKER,
     ) -> None:
         self.catalog_path = Path(catalog_path)
         self.retriever = CatalogRetriever(self.catalog_path, weights=weights)
@@ -38,6 +41,12 @@ class Agent:
             self.interpreter = None
         else:
             self.interpreter = PreferenceInterpreter.from_environment()
+        if reranker is not _AUTO_RERANKER:
+            self.reranker = reranker
+        elif openai_enabled is False or interpreter is not _AUTO_INTERPRETER:
+            self.reranker = None
+        else:
+            self.reranker = CandidateReranker.from_environment()
 
     def close(self) -> None:
         self.retriever.close()
@@ -92,6 +101,23 @@ class Agent:
             )
         except Exception:
             search_result = self.retriever.fallback(requested_count)
+
+        if self.reranker is not None and len(search_result.candidates) > 1:
+            try:
+                rerank = self.reranker.rerank(
+                    state,
+                    str(user_message),
+                    search_result.candidates,
+                    self.retriever.metadata,
+                )
+            except Exception:
+                rerank = None
+            if rerank is not None:
+                prompt_tokens += max(0, int(rerank.prompt_tokens))
+                completion_tokens += max(0, int(rerank.completion_tokens))
+                search_result = replace(
+                    search_result, recommendations=tuple(rerank.ordering)
+                )
 
         identifiers = [
             product_id
