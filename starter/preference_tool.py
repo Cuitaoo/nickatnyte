@@ -6,7 +6,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from starter.state import ALLOWED_PREFERENCE_ATTRIBUTES, ShoppingState
+from starter.state import (
+    ALLOWED_PREFERENCE_ATTRIBUTES,
+    PreferenceEvidence,
+    ShoppingState,
+)
 
 
 SPACE_RE = re.compile(r"\s+")
@@ -134,6 +138,38 @@ def _canonical_preference_values(attribute: str, value: str) -> list[str]:
     return matches or [value]
 
 
+def _normalized_patch_values(
+    patch: PreferencePatch,
+) -> dict[str, tuple[str, ...]]:
+    grouped: dict[str, list[str]] = {}
+    for item in patch.set_preferences:
+        attribute = normalize_value(item.attribute)
+        value = normalize_value(item.value)
+        if (
+            attribute not in ALLOWED_PREFERENCE_ATTRIBUTES
+            or attribute == "category"
+            or not value
+        ):
+            continue
+        bucket = grouped.setdefault(attribute, [])
+        for canonical_value in _canonical_preference_values(attribute, value):
+            _append_unique(bucket, canonical_value)
+    return {attribute: tuple(values) for attribute, values in grouped.items()}
+
+
+def _evidence_source(
+    state: ShoppingState,
+    attributes: set[str],
+    *,
+    correction: bool,
+) -> Literal["unsolicited", "clarification", "correction"]:
+    if correction:
+        return "correction"
+    if state.previous_ask_attribute in attributes:
+        return "clarification"
+    return "unsolicited"
+
+
 def apply_preference_patch(
     state: ShoppingState, patch: PreferencePatch
 ) -> ShoppingState:
@@ -142,6 +178,8 @@ def apply_preference_patch(
     removed = {key: list(values) for key, values in state.removed_preferences.items()}
     no_preference = set(state.no_preference_attributes)
     search_terms = list(state.search_terms)
+    evidence = list(state.preference_evidence)
+    values_by_attribute = _normalized_patch_values(patch)
 
     asked_attributes = state.asked_attributes
     previous_ask_attribute = state.previous_ask_attribute
@@ -220,10 +258,52 @@ def apply_preference_patch(
             _append_unique(bucket, canonical_value)
 
     rejected_values = {value for values in removed.values() for value in values}
+    accepted_patch_terms: list[str] = []
     for raw_term in patch.search_terms:
         term = normalize_value(raw_term)
         if term and term not in rejected_values:
             _append_unique(search_terms, term)
+            _append_unique(accepted_patch_terms, term)
+
+    attributes = set(values_by_attribute)
+    source_kind = _evidence_source(
+        state,
+        attributes,
+        correction=patch.reset_product_preferences,
+    )
+    assigned_terms: set[str] = set()
+    single_attribute = next(iter(attributes)) if len(attributes) == 1 else None
+    for attribute, values in values_by_attribute.items():
+        terms: tuple[str, ...] = ()
+        if single_attribute == attribute:
+            matching_terms = [
+                term
+                for term in accepted_patch_terms
+                if any(term in value or value in term for value in values)
+            ]
+            terms = tuple(matching_terms)
+            assigned_terms.update(matching_terms)
+        evidence.append(
+            PreferenceEvidence(
+                attribute=attribute,
+                values=values,
+                terms=terms,
+                source_turn=state.turn + 1,
+                source_kind=source_kind,
+            )
+        )
+    remaining_terms = tuple(
+        term for term in accepted_patch_terms if term not in assigned_terms
+    )
+    if remaining_terms:
+        evidence.append(
+            PreferenceEvidence(
+                attribute="other",
+                terms=remaining_terms,
+                source_turn=state.turn + 1,
+                source_kind=source_kind,
+            )
+        )
 
     return replace(
         state,
@@ -233,6 +313,7 @@ def apply_preference_patch(
         removed_preferences={key: tuple(values) for key, values in removed.items()},
         no_preference_attributes=frozenset(no_preference),
         search_terms=tuple(search_terms),
+        preference_evidence=tuple(evidence),
         asked_attributes=asked_attributes,
         previous_ask_attribute=previous_ask_attribute,
         latest_recommendations=latest_recommendations,

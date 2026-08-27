@@ -11,7 +11,7 @@ from starter.preference_tool import (
     apply_preference_patch,
     parse_preference_fallback,
 )
-from starter.state import ShoppingState
+from starter.state import PreferenceEvidence, ShoppingState
 
 
 class PreferenceUpdateTest(unittest.TestCase):
@@ -55,6 +55,59 @@ class PreferenceUpdateTest(unittest.TestCase):
         self.assertEqual(updated.preferences, {"color": ("blue",)})
         self.assertEqual(updated.search_terms, ("running",))
         self.assertEqual(state.preferences, {})
+
+    def test_unprompted_preference_records_unsolicited_evidence(self) -> None:
+        updated = apply_preference_patch(
+            ShoppingState.new("s1", {}),
+            PreferencePatch(
+                set_preferences=[
+                    PreferenceValue(attribute="feature", value="machine washable")
+                ]
+            ),
+        )
+
+        self.assertEqual(
+            updated.preference_evidence,
+            (
+                PreferenceEvidence(
+                    attribute="feature",
+                    values=("machine washable",),
+                    source_turn=1,
+                    source_kind="unsolicited",
+                ),
+            ),
+        )
+
+    def test_answer_to_previous_question_records_clarification_evidence(self) -> None:
+        state = replace(
+            ShoppingState.new("s1", {}),
+            previous_ask_attribute="material",
+            turn=1,
+        )
+
+        updated = apply_preference_patch(
+            state,
+            PreferencePatch(
+                set_preferences=[
+                    PreferenceValue(
+                        attribute="material",
+                        value="95% polyester, 5% spandex",
+                    )
+                ]
+            ),
+        )
+
+        self.assertEqual(
+            updated.preference_evidence,
+            (
+                PreferenceEvidence(
+                    attribute="material",
+                    values=("polyester", "spandex"),
+                    source_turn=2,
+                    source_kind="clarification",
+                ),
+            ),
+        )
 
     def test_compound_material_value_is_canonicalized_for_search(self) -> None:
         state = ShoppingState.new("s1", {})
