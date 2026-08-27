@@ -8,9 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from starter.retrieval import (
-    CONFIRMED_ATTRIBUTE_BOOST,
     MAX_PROFILE_BOOST,
-    RRF_OFFSET,
     CatalogRetriever,
     RankedCandidate,
     RetrievalWeights,
@@ -171,7 +169,7 @@ class RetrievalTest(unittest.TestCase):
 
         self.assertEqual(
             dict(target.score_components)["preference:material"],
-            CONFIRMED_ATTRIBUTE_BOOST,
+            RetrievalWeights().confirmed_attribute_boost,
         )
 
     def test_removed_value_penalizes_matching_product(self) -> None:
@@ -368,10 +366,20 @@ class RetrievalTest(unittest.TestCase):
         product nothing matched can outrank the best lexical match, which is the
         opposite of a tie-breaker.
         """
-        strongest_route_weight = 2.20
-        best_single_route_hit = strongest_route_weight / (RRF_OFFSET + 1)
+        weights = RetrievalWeights()
+        weakest_route_weight = min(
+            weights.route_category,
+            weights.route_feature_use_case,
+            weights.route_exact_phrase,
+            weights.route_attribute,
+            weights.route_relaxed,
+            weights.route_latest,
+            weights.route_latest_override,
+            weights.route_synonym,
+        )
+        weakest_single_route_hit = weakest_route_weight / (weights.rrf_offset + 1)
 
-        self.assertLess(MAX_PROFILE_BOOST, best_single_route_hit)
+        self.assertLess(MAX_PROFILE_BOOST, weakest_single_route_hit)
 
 
 COMPOUND_PRODUCTS = [
@@ -495,10 +503,17 @@ class SynonymRouteTest(unittest.TestCase):
 
 
 class RetrievalWeightsTest(unittest.TestCase):
-    def test_default_weights_match_module_constants(self) -> None:
+    def test_default_weights_match_recorded_tuning_result(self) -> None:
+        report_path = (
+            Path(__file__).resolve().parent.parent
+            / "docs"
+            / "evaluations"
+            / "weight-tuning.json"
+        )
+        best = json.loads(report_path.read_text(encoding="utf-8"))["best"]["weights"]
         weights = RetrievalWeights()
-        self.assertEqual(weights.confirmed_attribute_boost, CONFIRMED_ATTRIBUTE_BOOST)
-        self.assertEqual(weights.rrf_offset, RRF_OFFSET)
+        for name, value in best.items():
+            self.assertEqual(getattr(weights, name), value)
 
     def test_custom_weights_change_ranking(self) -> None:
         directory = tempfile.TemporaryDirectory()

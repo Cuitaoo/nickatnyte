@@ -262,24 +262,30 @@ DIAGNOSTIC_POOL = 100
 
 @dataclass(frozen=True)
 class RetrievalWeights:
-    """Tunable ranking constants; defaults are the hand-tuned baseline."""
+    """Tunable ranking constants.
 
-    rrf_offset: float = RRF_OFFSET
-    category_boost: float = CATEGORY_BOOST
-    confirmed_attribute_boost: float = CONFIRMED_ATTRIBUTE_BOOST
-    exact_phrase_boost: float = EXACT_PHRASE_BOOST
-    removed_attribute_penalty: float = REMOVED_ATTRIBUTE_PENALTY
-    multi_route_bonus: float = 0.12
-    rating_coef: float = 0.002
-    rating_count_coef: float = 0.0002
-    route_category: float = 1.40
-    route_feature_use_case: float = 1.35
-    route_exact_phrase: float = 1.60
-    route_attribute: float = 1.25
-    route_relaxed: float = 0.80
-    route_latest: float = 1.50
-    route_latest_override: float = 2.20
-    route_synonym: float = 0.55
+    Defaults are the best random-search configuration from
+    ``tools/tune_weights.py`` (seed 7, 20 trials, stratified 150/50 split;
+    see docs/evaluations/weight-tuning.json): train 0.8176 / holdout 0.8352
+    vs the hand-tuned baseline's 0.8103 / 0.8058.
+    """
+
+    rrf_offset: float = 5.049346763678743
+    category_boost: float = 1.0586227003338649
+    confirmed_attribute_boost: float = 1.3021929603979996
+    exact_phrase_boost: float = 2.1756228415861134
+    removed_attribute_penalty: float = 2.3927678713168463
+    multi_route_bonus: float = 0.08457270764590544
+    rating_coef: float = 0.0017193930814524492
+    rating_count_coef: float = 0.0003346942922951214
+    route_category: float = 0.7827315103345402
+    route_feature_use_case: float = 1.258176402376759
+    route_exact_phrase: float = 1.7135065698695175
+    route_attribute: float = 2.1268167707488765
+    route_relaxed: float = 1.2454193337901538
+    route_latest: float = 2.484458494106324
+    route_latest_override: float = 1.6181503400897523
+    route_synonym: float = 0.4890644682366305
 
 ATTRIBUTE_LEXICONS = {
     "material": frozenset(
