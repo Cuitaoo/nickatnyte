@@ -437,6 +437,7 @@ def apply_preference_patch(
         category = patch_category
         no_preference.discard("category")
 
+    raw_phrases_by_attribute: dict[str, list[str]] = {}
     for item in patch.set_preferences:
         attribute = normalize_value(item.attribute)
         value = normalize_value(item.value)
@@ -448,12 +449,19 @@ def apply_preference_patch(
             continue
         no_preference.discard(attribute)
         bucket = preferences.setdefault(attribute, [])
-        for canonical_value in _canonical_preference_values(attribute, value):
+        canonical_values = _canonical_preference_values(attribute, value)
+        for canonical_value in canonical_values:
             if canonical_value in removed.get(attribute, []):
                 removed[attribute].remove(canonical_value)
                 if not removed[attribute]:
                     removed.pop(attribute)
             _append_unique(bucket, canonical_value)
+        # A compound raw value (e.g. "90% cotton, 10% others") is a near-unique
+        # catalog phrase; keep it for exact-phrase retrieval alongside the
+        # canonical atomic values used for matching.
+        if canonical_values != [value] and len(TOKEN_RE.findall(value)) >= 2:
+            _append_unique(search_terms, value)
+            _append_unique(raw_phrases_by_attribute.setdefault(attribute, []), value)
 
     rejected_values = {value for values in removed.values() for value in values}
     accepted_patch_terms: list[str] = []
@@ -477,6 +485,10 @@ def apply_preference_patch(
         if len(matching_attributes) == 1:
             terms_by_attribute[matching_attributes[0]].append(term)
             assigned_terms.add(term)
+    for attribute, phrases in raw_phrases_by_attribute.items():
+        bucket = terms_by_attribute.setdefault(attribute, [])
+        for phrase in phrases:
+            _append_unique(bucket, phrase)
     for attribute, values in values_by_attribute.items():
         source_kind = _evidence_source(
             state,

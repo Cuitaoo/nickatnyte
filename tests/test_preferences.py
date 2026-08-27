@@ -103,6 +103,7 @@ class PreferenceUpdateTest(unittest.TestCase):
                 PreferenceEvidence(
                     attribute="material",
                     values=("polyester", "spandex"),
+                    terms=("95% polyester, 5% spandex",),
                     source_turn=2,
                     source_kind="clarification",
                 ),
@@ -689,6 +690,33 @@ class PreferenceUpdateTest(unittest.TestCase):
         self.assertTrue(patch.reset_product_preferences)
         self.assertEqual(patch.intent_mode, "buying")
         self.assertIn("waterproof", patch.search_terms)
+
+
+class CompoundEvidenceTest(unittest.TestCase):
+    def test_compound_material_keeps_raw_phrase_as_search_term(self) -> None:
+        state = ShoppingState.new("s", {})
+        patch = PreferencePatch(
+            set_preferences=[
+                PreferenceValue(attribute="material", value="90% Cotton, 10% Others")
+            ]
+        )
+        updated = apply_preference_patch(state, patch)
+        self.assertEqual(updated.preferences["material"], ("cotton",))
+        self.assertIn("90% cotton, 10% others", updated.search_terms)
+        material_evidence = [
+            item for item in updated.preference_evidence if item.attribute == "material"
+        ]
+        self.assertTrue(
+            any("90% cotton, 10% others" in item.terms for item in material_evidence)
+        )
+
+    def test_atomic_material_adds_no_extra_search_term(self) -> None:
+        state = ShoppingState.new("s", {})
+        patch = PreferencePatch(
+            set_preferences=[PreferenceValue(attribute="material", value="cotton")]
+        )
+        updated = apply_preference_patch(state, patch)
+        self.assertNotIn("cotton", updated.search_terms)
 
 
 class FallbackBudgetTest(unittest.TestCase):

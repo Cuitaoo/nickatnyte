@@ -373,6 +373,63 @@ class RetrievalTest(unittest.TestCase):
         self.assertLess(MAX_PROFILE_BOOST, best_single_route_hit)
 
 
+COMPOUND_PRODUCTS = [
+    {
+        "parent_asin": "COMPOUND_SWEATSHIRT",
+        "title": "Loose Cotton Sweatshirt Top",
+        "categories": ["Women", "Clothing", "Sweatshirts"],
+        "features": ["pull on closure"],
+        "details": {"fabric": "90% Cotton, 10% Others"},
+        "description": ["simple spring top"],
+        "store": "Mordenmiss",
+        "price": 30.0,
+        "average_rating": 4.2,
+        "rating_number": 200,
+    },
+    {
+        "parent_asin": "PLAIN_SWEATSHIRT",
+        "title": "Loose Cotton Sweatshirt Top",
+        "categories": ["Women", "Clothing", "Sweatshirts"],
+        "features": ["pull on closure"],
+        "details": {"fabric": "cotton blend"},
+        "description": ["simple spring top"],
+        "store": "Basics",
+        "price": 30.0,
+        "average_rating": 4.6,
+        "rating_number": 900,
+    },
+]
+
+
+class CompoundPhraseRetrievalTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._directory = tempfile.TemporaryDirectory()
+        catalog_path = Path(cls._directory.name) / "catalog.jsonl"
+        catalog_path.write_text(
+            "".join(json.dumps(product) + "\n" for product in COMPOUND_PRODUCTS),
+            encoding="utf-8",
+        )
+        cls.retriever = CatalogRetriever(catalog_path)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.retriever.close()
+        cls._directory.cleanup()
+
+    def test_compound_search_term_prefers_exact_composition(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="sweatshirt",
+            preferences={"material": ("cotton",)},
+            search_terms=("90% cotton, 10% others",),
+        )
+
+        results = self.retriever.search(state, "cotton", 2).recommendations
+
+        self.assertEqual(results[0], "COMPOUND_SWEATSHIRT")
+
+
 class BudgetMatchTest(unittest.TestCase):
     def test_around_budget_matches_price_band(self) -> None:
         product = {"price": 55.0}

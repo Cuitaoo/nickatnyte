@@ -204,7 +204,7 @@ def _route_specs(state: ShoppingState, latest_message: str) -> tuple[_RouteSpec,
                 "exact_phrase",
                 tuple(
                     value
-                    for value in [*functional_values, latest_message]
+                    for value in [*functional_values, *state.search_terms, latest_message]
                     if len(lexical_terms([value])) >= 2
                 ),
                 ("title", "features", "details", "description"),
