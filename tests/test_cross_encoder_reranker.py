@@ -31,7 +31,8 @@ class CrossEncoderRerankerTest(unittest.TestCase):
 
     def test_blend_reorders_near_ties_only(self) -> None:
         # A and B are near-tied; C is far behind. The model prefers B strongly.
-        reranker = self._reranker([0.0, 10.0, 5.0])
+        # sigmoid(-10) ~ 0, sigmoid(10) ~ 1 -> B: 1.9+0.35 = 2.25 > A: 2.0.
+        reranker = self._reranker([-10.0, 10.0, 0.0])
         result = reranker.rerank(
             ShoppingState.new("s", {}),
             "message",
@@ -39,11 +40,39 @@ class CrossEncoderRerankerTest(unittest.TestCase):
             {"A": 2.00, "B": 1.90, "C": 0.50},
             METADATA,
         )
-        # minmax gives A=0, B=1, C=0.5 -> B: 1.9+0.35 = 2.25 > A: 2.0; C stays last.
         self.assertEqual(result, ["B", "A", "C"])
 
+    def test_minmax_stretches_relative_preferences(self) -> None:
+        # Min-max was measured better than sigmoid on both session sets: the
+        # model's relative ordering is informative even when logits saturate,
+        # so the strongest candidate always receives the full nudge.
+        reranker = self._reranker([0.51, 0.53, 0.52], weight=0.65)
+        result = reranker.rerank(
+            ShoppingState.new("s", {}),
+            "message",
+            ["A", "B", "C"],
+            {"A": 2.00, "B": 1.99, "C": 0.50},
+            METADATA,
+        )
+        self.assertEqual(result, ["B", "A", "C"])
+
+    def test_removed_preferences_reach_the_query(self) -> None:
+        from dataclasses import replace
+
+        from starter.cross_encoder_reranker import _query_text
+
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="boots",
+            preferences={"material": ("suede",)},
+            removed_preferences={"material": ("leather",)},
+        )
+        query = _query_text(state, "latest")
+        self.assertIn("material: suede", query)
+        self.assertIn("avoid material: leather", query)
+
     def test_blend_cannot_overcome_large_score_gaps(self) -> None:
-        reranker = self._reranker([0.0, 10.0, 0.0])
+        reranker = self._reranker([-10.0, 10.0, -10.0])
         result = reranker.rerank(
             ShoppingState.new("s", {}),
             "message",
@@ -55,7 +84,7 @@ class CrossEncoderRerankerTest(unittest.TestCase):
 
     def test_tail_beyond_max_candidates_is_preserved(self) -> None:
         reranker = CrossEncoderReranker(max_candidates=2, weight=0.35)
-        reranker._model = FakeModel([0.0, 10.0])
+        reranker._model = FakeModel([-10.0, 10.0])
         result = reranker.rerank(
             ShoppingState.new("s", {}),
             "message",

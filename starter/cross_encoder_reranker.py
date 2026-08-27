@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from typing import Any
 
@@ -96,6 +97,9 @@ def _query_text(state: ShoppingState, latest_message: str) -> str:
     for attribute, values in sorted(state.preferences.items()):
         if values:
             parts.append(f"{attribute}: {', '.join(values)}")
+    for attribute, values in sorted(state.removed_preferences.items()):
+        if values:
+            parts.append(f"avoid {attribute}: {', '.join(values)}")
     if state.search_terms:
         parts.append(f"search terms: {', '.join(state.search_terms)}")
     return "\n".join(parts)
