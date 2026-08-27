@@ -110,14 +110,21 @@ scoring may disable network entirely. The reranker additionally defaults
 off (`OPENAI_RERANK_ENABLED`) pending evidence that its gain justifies
 doubling per-turn calls.
 
-## Pending
+## Paid-mode validation: deliberately not completed
 
-- **Paid-mode validation has NOT been run for any fable-model change.** The
-  interpreter prompt change and the reranker are unvalidated against live
-  `gpt-5.6-luna`; the last paid artifact predates this branch. Run the
-  OpenAI-enabled command below (with and without `OPENAI_RERANK_ENABLED`)
-  before treating paid-mode behavior as known. This requires an explicit
-  spend decision.
+A full OpenAI-enabled evaluation (interpreter + reranker) was started twice
+on 2026-08-27 and killed both times by explicit decision. The second run was
+terminated after ~1h54m (~80-100% complete, est. ~1,400 API calls) once the
+offline-first posture made the result non-load-bearing: a stack that is
+50-100x slower end to end was never going to become the default
+configuration regardless of its score. Consequences to keep in mind:
+
+- The interpreter prompt (vocabulary/intent translation) and the reranker
+  remain **unvalidated against live `gpt-5.6-luna`**. They are covered by
+  unit tests with fake models and verified inert offline, nothing more.
+- If the online mode is ever promoted beyond "optional upside", run the
+  command below first and record score, wall time, and token usage — the
+  submission rules require those disclosures.
 
 ## Reproduction
 
