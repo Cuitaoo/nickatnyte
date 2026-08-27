@@ -357,5 +357,71 @@ class AgentIntegrationTest(unittest.TestCase):
         self.assertNotEqual(response["ask_attribute"], "material")
 
 
+class VocabularyTranslationTest(unittest.TestCase):
+    """The LLM interpreter is the semantic layer: it translates shopper
+    vocabulary and intent into catalog terms, and that translation must flow
+    through state into retrieval."""
+
+    def test_prompt_instructs_vocabulary_translation(self) -> None:
+        from starter.llm_agent import SYSTEM_PROMPT
+
+        self.assertIn("translate", SYSTEM_PROMPT.lower())
+        self.assertIn("search_terms", SYSTEM_PROMPT)
+
+    def test_translated_terms_reach_retrieval(self) -> None:
+        products = [
+            {
+                "parent_asin": "PANTIES_PACK",
+                "title": "Cotton Panties Multipack",
+                "categories": ["Women", "Clothing", "Lingerie", "Panties"],
+                "features": ["soft cotton"],
+                "details": {"count": "6"},
+                "description": ["everyday underwear"],
+                "store": "Basics",
+                "price": 18.0,
+                "average_rating": 4.4,
+                "rating_number": 900,
+            },
+            {
+                "parent_asin": "WOOL_SOCKS",
+                "title": "Merino Wool Hiking Socks",
+                "categories": ["Women", "Clothing", "Socks"],
+                "features": ["warm wool"],
+                "details": {"count": "3"},
+                "description": ["trail socks"],
+                "store": "TrailCo",
+                "price": 15.0,
+                "average_rating": 4.8,
+                "rating_number": 1500,
+            },
+        ]
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        catalog_path = Path(directory.name) / "catalog.jsonl"
+        catalog_path.write_text(
+            "".join(json.dumps(product) + "\n" for product in products),
+            encoding="utf-8",
+        )
+        # The interpreter translates "knickers" (absent from the catalog) into
+        # catalog vocabulary, as the system prompt instructs the real model to.
+        interpreter = QueueInterpreter(
+            [
+                PreferencePatch(
+                    intent_mode="buying",
+                    category="panties",
+                    search_terms=["knickers", "panties", "underwear"],
+                )
+            ]
+        )
+        agent = Agent(catalog_path, interpreter=interpreter)
+        self.addCleanup(agent.close)
+        agent.reset("s", {})
+
+        response = agent.respond("s", "I'm looking for knickers", 1, 2)
+
+        identifiers = [item["parent_asin"] for item in response["recommendations"]]
+        self.assertEqual(identifiers[0], "PANTIES_PACK")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -30,9 +30,19 @@ You must call update_user_preferences exactly once and must not answer in prose.
 Keep prior preferences unless the shopper changes, rejects, or overrides them.
 Set reset_product_preferences=true only for a clear product-intent override.
 Use unchanged for intent_mode and category when the message does not update them.
-Normalize concise search terms. Never create, request, or return product IDs.
+Never create, request, or return product IDs.
 Allowed attributes are category, material, color, size, style, brand, budget,
 feature, use_case, and other.
+Downstream search is exact lexical matching over US e-commerce product listings,
+so translate the shopper's intent into the vocabulary such listings use:
+- Map regional, slang, or uncommon words to common US catalog terms (e.g.
+  "knickers" -> panties underwear, "jumper" -> sweater, "trainers" -> sneakers,
+  "wellies" -> rain boots), in category and search_terms.
+- Unpack implied needs into concrete attributes (e.g. "something warm for
+  morning jogs" -> use_case running, feature thermal fleece). Record what the
+  shopper means, not only the words they used.
+- search_terms must be concise catalog-style keywords; include the shopper's
+  original distinctive words plus their catalog translations.
 Infer confirmed preferences only from shopper messages; no general profile is provided."""
 
 
