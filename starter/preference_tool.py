@@ -170,6 +170,132 @@ def _evidence_source(
     return "unsolicited"
 
 
+UpdateKind = Literal["ordinary", "preference_correction", "product_change"]
+
+
+def _classify_update(
+    state: ShoppingState,
+    patch: PreferencePatch,
+    patch_category: str,
+    values_by_attribute: dict[str, tuple[str, ...]],
+) -> UpdateKind:
+    if not patch.reset_product_preferences:
+        return "ordinary"
+    keeps_category = patch_category == "unchanged" or _looks_like_attribute_constraint(
+        patch_category
+    )
+    if state.category and keeps_category and values_by_attribute:
+        return "preference_correction"
+    return "product_change"
+
+
+def _without_attributes(
+    evidence: list[PreferenceEvidence], attributes: set[str]
+) -> tuple[list[PreferenceEvidence], list[PreferenceEvidence]]:
+    active = [item for item in evidence if item.attribute not in attributes]
+    retired = [item for item in evidence if item.attribute in attributes]
+    return active, retired
+
+
+def _retire_latest_unsolicited(
+    evidence: list[PreferenceEvidence],
+    excluded_attributes: set[str],
+) -> tuple[list[PreferenceEvidence], PreferenceEvidence | None]:
+    for index in range(len(evidence) - 1, -1, -1):
+        item = evidence[index]
+        if item.source_kind == "unsolicited" and item.attribute not in excluded_attributes:
+            return evidence[:index] + evidence[index + 1 :], item
+    return evidence, None
+
+
+def _remove_evidence_values(
+    evidence: list[PreferenceEvidence],
+    attribute: str,
+    values: set[str] | None,
+) -> tuple[list[PreferenceEvidence], list[PreferenceEvidence]]:
+    active: list[PreferenceEvidence] = []
+    retired: list[PreferenceEvidence] = []
+    for item in evidence:
+        if item.attribute != attribute:
+            active.append(item)
+            continue
+        if values is None:
+            retired.append(item)
+            continue
+        removed_values = tuple(value for value in item.values if value in values)
+        removed_terms = tuple(
+            term
+            for term in item.terms
+            if any(value == term or value in term for value in values)
+        )
+        remaining_values = tuple(value for value in item.values if value not in values)
+        remaining_terms = tuple(term for term in item.terms if term not in removed_terms)
+        if removed_values or removed_terms:
+            retired.append(
+                replace(item, values=removed_values, terms=removed_terms)
+            )
+        if remaining_values or remaining_terms:
+            active.append(
+                replace(item, values=remaining_values, terms=remaining_terms)
+            )
+    return active, retired
+
+
+def _drop_retired_support(
+    preferences: dict[str, list[str]],
+    search_terms: list[str],
+    active: list[PreferenceEvidence],
+    retired: list[PreferenceEvidence],
+) -> tuple[dict[str, list[str]], list[str]]:
+    supported_values = {
+        (item.attribute, value) for item in active for value in item.values
+    }
+    supported_terms = {term for item in active for term in item.terms}
+    for item in retired:
+        if item.attribute in preferences:
+            preferences[item.attribute] = [
+                value
+                for value in preferences[item.attribute]
+                if (item.attribute, value) in supported_values
+                or value not in item.values
+            ]
+            if not preferences[item.attribute]:
+                preferences.pop(item.attribute)
+        search_terms = [
+            term
+            for term in search_terms
+            if term in supported_terms or term not in item.terms
+        ]
+    return preferences, search_terms
+
+
+def _keep_active_evidence_support(
+    preferences: dict[str, list[str]],
+    search_terms: list[str],
+    evidence: list[PreferenceEvidence],
+) -> tuple[dict[str, list[str]], list[str]]:
+    supported_values = {
+        (item.attribute, value) for item in evidence for value in item.values
+    }
+    supported_terms = {term for item in evidence for term in item.terms}
+    kept_preferences = {
+        attribute: [
+            value
+            for value in values
+            if (attribute, value) in supported_values
+        ]
+        for attribute, values in preferences.items()
+    }
+    return (
+        {
+            attribute: values
+            for attribute, values in kept_preferences.items()
+            if values
+        },
+        [term for term in search_terms if term in supported_terms],
+    )
+
+
 def apply_preference_patch(
     state: ShoppingState, patch: PreferencePatch
 ) -> ShoppingState:
@@ -186,13 +312,46 @@ def apply_preference_patch(
     latest_recommendations = state.latest_recommendations
 
     patch_category = normalize_value(patch.category)
-    if patch.reset_product_preferences:
+    update_kind = _classify_update(
+        state,
+        patch,
+        patch_category,
+        values_by_attribute,
+    )
+    if update_kind == "product_change":
+        category = None
         preferences.clear()
         removed.clear()
         no_preference.clear()
         search_terms.clear()
+        evidence.clear()
         asked_attributes = ()
         previous_ask_attribute = None
+        latest_recommendations = ()
+    elif update_kind == "preference_correction":
+        corrected_attributes = set(values_by_attribute)
+        evidence, retired = _without_attributes(evidence, corrected_attributes)
+        evidence, retired_unsolicited = _retire_latest_unsolicited(
+            evidence,
+            corrected_attributes,
+        )
+        if retired_unsolicited is not None:
+            retired.append(retired_unsolicited)
+        for attribute in corrected_attributes:
+            preferences.pop(attribute, None)
+            removed.pop(attribute, None)
+            no_preference.discard(attribute)
+        preferences, search_terms = _drop_retired_support(
+            preferences,
+            search_terms,
+            evidence,
+            retired,
+        )
+        preferences, search_terms = _keep_active_evidence_support(
+            preferences,
+            search_terms,
+            evidence,
+        )
         latest_recommendations = ()
 
     for removal in patch.remove_preferences:
@@ -205,17 +364,37 @@ def apply_preference_patch(
                 category = None
         elif attribute in preferences:
             if value:
+                canonical_values = _canonical_preference_values(attribute, value)
                 preferences[attribute] = [
-                    item for item in preferences[attribute] if item != value
+                    item
+                    for item in preferences[attribute]
+                    if item not in canonical_values
                 ]
                 if not preferences[attribute]:
                     preferences.pop(attribute)
             else:
                 preferences.pop(attribute)
+        canonical_values = (
+            _canonical_preference_values(attribute, value) if value else []
+        )
+        evidence, retired_evidence = _remove_evidence_values(
+            evidence,
+            attribute,
+            set(canonical_values) if canonical_values else None,
+        )
+        preferences, search_terms = _drop_retired_support(
+            preferences,
+            search_terms,
+            evidence,
+            retired_evidence,
+        )
         if value:
             bucket = removed.setdefault(attribute, [])
-            _append_unique(bucket, value)
-            search_terms = [term for term in search_terms if term != value]
+            for canonical_value in canonical_values:
+                _append_unique(bucket, canonical_value)
+                search_terms = [
+                    term for term in search_terms if term != canonical_value
+                ]
 
     for raw_attribute in patch.no_preference_attributes:
         attribute = normalize_value(raw_attribute)
@@ -226,12 +405,23 @@ def apply_preference_patch(
             category = None
         else:
             preferences.pop(attribute, None)
+        evidence, retired_evidence = _remove_evidence_values(
+            evidence,
+            attribute,
+            None,
+        )
+        preferences, search_terms = _drop_retired_support(
+            preferences,
+            search_terms,
+            evidence,
+            retired_evidence,
+        )
 
     intent_mode = state.intent_mode
     if patch.intent_mode != "unchanged":
         intent_mode = patch.intent_mode
 
-    if patch.reset_product_preferences and _looks_like_attribute_constraint(
+    if update_kind == "preference_correction" and _looks_like_attribute_constraint(
         patch_category
     ):
         patch_category = "unchanged"
@@ -266,14 +456,14 @@ def apply_preference_patch(
             _append_unique(accepted_patch_terms, term)
 
     attributes = set(values_by_attribute)
-    source_kind = _evidence_source(
-        state,
-        attributes,
-        correction=patch.reset_product_preferences,
-    )
     assigned_terms: set[str] = set()
     single_attribute = next(iter(attributes)) if len(attributes) == 1 else None
     for attribute, values in values_by_attribute.items():
+        source_kind = _evidence_source(
+            state,
+            {attribute},
+            correction=update_kind == "preference_correction",
+        )
         terms: tuple[str, ...] = ()
         if single_attribute == attribute:
             matching_terms = [
@@ -296,6 +486,11 @@ def apply_preference_patch(
         term for term in accepted_patch_terms if term not in assigned_terms
     )
     if remaining_terms:
+        source_kind = _evidence_source(
+            state,
+            attributes,
+            correction=update_kind == "preference_correction",
+        )
         evidence.append(
             PreferenceEvidence(
                 attribute="other",
