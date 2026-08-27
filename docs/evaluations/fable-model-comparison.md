@@ -74,6 +74,19 @@ deliberately skipped: intent cards are built from catalog text, so
 out-of-catalog vocabulary can only enter through paraphrasing, which the
 LLM path covers with world knowledge no catalog-only method has.
 
+## Negative result: local cross-encoder reranking
+
+A prototype `bge-reranker-base` (int8 ONNX, CPU) was injected through the
+same reranker interface and measured offline on all 200 sessions:
+score 0.653464, Hit@10 0.885, MRR 0.247546 — a severe regression from the
+deterministic 0.822008. Top candidates are near-duplicate products whose
+discriminator is exact constraint matching (composition strings, closure
+type, price band), which the boost pipeline already encodes; a textual
+cross-encoder cannot separate such near-duplicates and overwrote a correct
+ordering with similarity noise. The 279MB model would also have strained
+the "lightweight local assets" rule. Local cross-encoder reranking is
+rejected; nothing was committed.
+
 ## Pending
 
 - **Paid-mode validation has NOT been run for any fable-model change.** The
