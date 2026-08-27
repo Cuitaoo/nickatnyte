@@ -79,6 +79,14 @@ turn, and a deterministic public-set technical score of **0.822** (Hit@10
 Retrieval, preference tracking, clarification policy, and ranking are all
 local and deterministic.
 
+An optional **offline cross-encoder reranker** raises the public-set score
+to **0.834** (MRR 0.632) while staying fully offline at inference time. It
+blends `ms-marco-MiniLM-L6-v2` scores into the top-10 ordering and needs
+the `requirements-vector.txt` extras (a torch stack) plus a one-time 23MB
+model download; enable it with `TECHJAM_RERANK_ENABLED=true`. If the extras
+cannot be installed in the scoring environment, leave it disabled — the
+zero-dependency lexical mode above is the guaranteed fallback.
+
 The OpenAI integration (preference interpretation, vocabulary/intent
 translation, optional candidate reranking) is an **optional online
 enhancement**: it activates only when a key is present and network access is

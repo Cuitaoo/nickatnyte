@@ -74,18 +74,37 @@ deliberately skipped: intent cards are built from catalog text, so
 out-of-catalog vocabulary can only enter through paraphrasing, which the
 LLM path covers with world knowledge no catalog-only method has.
 
-## Negative result: local cross-encoder reranking
+## Local cross-encoder reranking: replace rejected, blend adopted
 
-A prototype `bge-reranker-base` (int8 ONNX, CPU) was injected through the
-same reranker interface and measured offline on all 200 sessions:
-score 0.653464, Hit@10 0.885, MRR 0.247546 — a severe regression from the
-deterministic 0.822008. Top candidates are near-duplicate products whose
-discriminator is exact constraint matching (composition strings, closure
-type, price band), which the boost pipeline already encodes; a textual
-cross-encoder cannot separate such near-duplicates and overwrote a correct
-ordering with similarity noise. The 279MB model would also have strained
-the "lightweight local assets" rule. Local cross-encoder reranking is
-rejected; nothing was committed.
+Two designs were measured; the architecture, not the idea, decided the
+outcome.
+
+**Rejected — replace the ordering.** A prototype `bge-reranker-base`
+(int8 ONNX, 279MB) that *overwrote* the top-20 order with cross-encoder
+scores collapsed the offline score to 0.653464 (Hit@10 0.885, MRR
+0.247546). Top candidates are near-duplicate products whose discriminator
+is exact constraint matching, which the boost pipeline already encodes;
+replacing that ordering with textual-similarity opinions destroyed it.
+
+**Adopted — blend into the score** (merged from
+`fable-plus-cross-encoder`, authored by Cui Tao). A 23MB
+`ms-marco-MiniLM-L6-v2` cross-encoder scores only the top 10 candidates and
+adds `0.35 * minmax(score)` to the existing boost score, so it can reorder
+only near-ties — exactly where the remaining MRR sits — and cannot disturb
+confident decisions:
+
+| Set | Lexical only | + blended cross-encoder |
+|---|---:|---:|
+| Public 200 | 0.822008 | **0.834251** (MRR 0.591 -> 0.632) |
+| Synthetic 200 (unseen targets) | 0.828392 | **0.834063** (MRR 0.651 -> 0.670) |
+
+Hit@10 and MTTC are unchanged on both sets: the blend only reorders within
+the top 10. Gated behind `TECHJAM_RERANK_ENABLED` (default off) with
+`local_files_only` model loading and fall-back-to-original-order on any
+failure. Trade-off: enabling it requires the `requirements-vector.txt`
+extras (`sentence-transformers`, i.e. a torch stack) and adds roughly one
+CPU-second per turn; the pure-lexical mode remains the zero-dependency
+guaranteed configuration.
 
 ## Generalization check: synthetic unseen targets
 
