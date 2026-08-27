@@ -87,6 +87,29 @@ ordering with similarity noise. The 279MB model would also have strained
 the "lightweight local assets" rule. Local cross-encoder reranking is
 rejected; nothing was committed.
 
+## Generalization check: synthetic unseen targets
+
+200 synthetic sessions were generated from catalog products never used as
+public-set targets (uniform sample, seed 42, official 40/40/15/5 scenario
+mix, evaluator's own intent-card synthesis). Offline result: score
+**0.828392**, Hit@10 0.96, MRR 0.6506, MTTC 3.34 — on par with the public
+set, so the 0.822 does not depend on the specific 200 public samples. The
+residual (deliberate) dependence is on the simulator's message templates;
+the LLM interpreter is the documented hedge for organizer-added
+paraphrasing.
+
+## Submission posture
+
+**Offline-first.** The default configuration is `OPENAI_ENABLED=false`:
+deterministic, no network, milliseconds per turn, 0.822 public score. The
+LLM mode is documented as an optional enhancement only: a full LLM-enabled
+evaluation is roughly 50-100x slower end to end (one interpreter call plus
+an optional rerank call per turn, serial), which is a poor fit for an
+organizer harness that may impose CPU/timeout restrictions - and official
+scoring may disable network entirely. The reranker additionally defaults
+off (`OPENAI_RERANK_ENABLED`) pending evidence that its gain justifies
+doubling per-turn calls.
+
 ## Pending
 
 - **Paid-mode validation has NOT been run for any fable-model change.** The

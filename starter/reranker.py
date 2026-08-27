@@ -61,8 +61,11 @@ class CandidateReranker:
         enabled = os.getenv("OPENAI_ENABLED", "true").strip().lower()
         if enabled in {"0", "false", "no", "off"}:
             return None
-        rerank_enabled = os.getenv("OPENAI_RERANK_ENABLED", "true").strip().lower()
-        if rerank_enabled in {"0", "false", "no", "off"}:
+        # Off by default: reranking doubles the per-turn API calls, so it must
+        # be a deliberate opt-in (see the submission-posture section of the
+        # README and docs/evaluations/fable-model-comparison.md).
+        rerank_enabled = os.getenv("OPENAI_RERANK_ENABLED", "false").strip().lower()
+        if rerank_enabled not in {"1", "true", "yes", "on"}:
             return None
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if not api_key:

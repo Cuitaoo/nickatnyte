@@ -65,8 +65,29 @@ Available settings:
 - `OPENAI_TIMEOUT_SECONDS`: request timeout, clamped to 1–60 seconds.
 - `OPENAI_MAX_RETRIES`: retry count, clamped to 0–3.
 - `OPENAI_ENABLED`: set to `false` to guarantee no API calls.
+- `OPENAI_RERANK_ENABLED`: set to `true` to also rerank the top candidates
+  with the model each turn (off by default posture; adds one call per turn).
 
 If the key is missing, OpenAI is disabled, or a request fails, the agent automatically uses its deterministic preference parser.
+
+## Submission Posture: Offline First
+
+The **default and recommended configuration is fully offline**
+(`OPENAI_ENABLED=false`): no network access, no API cost, milliseconds per
+turn, and a deterministic public-set technical score of **0.822** (Hit@10
+0.98, MRR 0.591, MTTC 3.26; see `docs/evaluations/fable-model-comparison.md`).
+Retrieval, preference tracking, clarification policy, and ranking are all
+local and deterministic.
+
+The OpenAI integration (preference interpretation, vocabulary/intent
+translation, optional candidate reranking) is an **optional online
+enhancement**: it activates only when a key is present and network access is
+allowed, and every failure path — timeout, invalid output, missing key —
+falls back to the deterministic behavior mid-turn. It exists as a hedge for
+organizer-added natural-language paraphrasing, which the deterministic
+template parser cannot handle. A full LLM-enabled evaluation is roughly
+50–100x slower end to end than offline mode, so the online mode should be
+treated as upside where the harness permits it, never as a requirement.
 
 ## Run Tests and Evaluation
 

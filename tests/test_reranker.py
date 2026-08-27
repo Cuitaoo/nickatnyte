@@ -102,6 +102,21 @@ class RerankerTest(unittest.TestCase):
         with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
             self.assertIsNone(CandidateReranker.from_environment())
 
+    def test_from_environment_requires_explicit_opt_in(self) -> None:
+        environment = {
+            "OPENAI_ENABLED": "true",
+            "OPENAI_API_KEY": "sk-test",
+        }
+        environment.pop("OPENAI_RERANK_ENABLED", None)
+        with patch.dict(os.environ, environment, clear=True):
+            self.assertIsNone(CandidateReranker.from_environment())
+        with patch.dict(
+            os.environ,
+            {**environment, "OPENAI_RERANK_ENABLED": "true"},
+            clear=True,
+        ):
+            self.assertIsNotNone(CandidateReranker.from_environment())
+
 
 class AgentRerankIntegrationTest(unittest.TestCase):
     def test_agent_uses_rerank_ordering_and_reports_usage(self) -> None:
