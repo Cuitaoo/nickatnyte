@@ -11,7 +11,7 @@ from starter.llm_agent import (
 )
 from starter.preference_tool import apply_preference_patch, parse_preference_fallback
 from starter.questions import choose_clarification
-from starter.retrieval import CatalogRetriever
+from starter.retrieval import CatalogRetriever, RetrievalWeights
 from starter.state import ShoppingState
 
 
@@ -27,9 +27,10 @@ class Agent:
         *,
         interpreter: object = _AUTO_INTERPRETER,
         openai_enabled: bool | None = None,
+        weights: RetrievalWeights | None = None,
     ) -> None:
         self.catalog_path = Path(catalog_path)
-        self.retriever = CatalogRetriever(self.catalog_path)
+        self.retriever = CatalogRetriever(self.catalog_path, weights=weights)
         self._sessions: dict[str, ShoppingState] = {}
         if interpreter is not _AUTO_INTERPRETER:
             self.interpreter = interpreter

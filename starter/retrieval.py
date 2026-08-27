@@ -165,7 +165,9 @@ def _phrase_expression(values: Iterable[str], columns: tuple[str, ...]) -> str:
     return fts_expression(phrases, columns)
 
 
-def _route_specs(state: ShoppingState, latest_message: str) -> tuple[_RouteSpec, ...]:
+def _route_specs(
+    state: ShoppingState, latest_message: str, weights: "RetrievalWeights"
+) -> tuple[_RouteSpec, ...]:
     category_values = [state.category] if state.category else []
     functional_values = [
         *state.preferences.get("feature", ()),
@@ -192,13 +194,13 @@ def _route_specs(state: ShoppingState, latest_message: str) -> tuple[_RouteSpec,
                 "category",
                 tuple(lexical_terms(category_values)),
                 ("title", "categories"),
-                1.40,
+                weights.route_category,
             ),
             _RouteSpec(
                 "feature_use_case",
                 tuple(lexical_terms(functional_values)),
                 ("features", "details", "description", "categories"),
-                1.35,
+                weights.route_feature_use_case,
             ),
             _RouteSpec(
                 "exact_phrase",
@@ -208,21 +210,25 @@ def _route_specs(state: ShoppingState, latest_message: str) -> tuple[_RouteSpec,
                     if len(lexical_terms([value])) >= 2
                 ),
                 ("title", "features", "details", "description"),
-                1.60,
+                weights.route_exact_phrase,
                 True,
             ),
             _RouteSpec(
                 "attribute",
                 tuple(lexical_terms(attribute_values)),
                 ("title", "details", "store", "description"),
-                1.25,
+                weights.route_attribute,
             ),
-            _RouteSpec("relaxed", tuple(lexical_terms(relaxed_values)), (), 0.80),
+            _RouteSpec(
+                "relaxed", tuple(lexical_terms(relaxed_values)), (), weights.route_relaxed
+            ),
             _RouteSpec(
                 "latest_message",
                 tuple(lexical_terms(latest_values)),
                 (),
-                2.20 if _is_override(latest_message) else 1.50,
+                weights.route_latest_override
+                if _is_override(latest_message)
+                else weights.route_latest,
             ),
         )
         if route.terms
@@ -238,6 +244,27 @@ REMOVED_ATTRIBUTE_PENALTY = 4.0
 MAX_PROFILE_BOOST = 0.03
 PROFILE_TERM_BOOST = 0.005
 DIAGNOSTIC_POOL = 100
+
+
+@dataclass(frozen=True)
+class RetrievalWeights:
+    """Tunable ranking constants; defaults are the hand-tuned baseline."""
+
+    rrf_offset: float = RRF_OFFSET
+    category_boost: float = CATEGORY_BOOST
+    confirmed_attribute_boost: float = CONFIRMED_ATTRIBUTE_BOOST
+    exact_phrase_boost: float = EXACT_PHRASE_BOOST
+    removed_attribute_penalty: float = REMOVED_ATTRIBUTE_PENALTY
+    multi_route_bonus: float = 0.12
+    rating_coef: float = 0.002
+    rating_count_coef: float = 0.0002
+    route_category: float = 1.40
+    route_feature_use_case: float = 1.35
+    route_exact_phrase: float = 1.60
+    route_attribute: float = 1.25
+    route_relaxed: float = 0.80
+    route_latest: float = 1.50
+    route_latest_override: float = 2.20
 
 ATTRIBUTE_LEXICONS = {
     "material": frozenset(
@@ -397,8 +424,13 @@ def select_diverse_recommendations(
 
 
 class CatalogRetriever:
-    def __init__(self, catalog_path: str | Path) -> None:
+    def __init__(
+        self,
+        catalog_path: str | Path,
+        weights: RetrievalWeights | None = None,
+    ) -> None:
         self.catalog_path = Path(catalog_path)
+        self.weights = weights or RetrievalWeights()
         self.connection = sqlite3.connect(":memory:")
         self.metadata: dict[str, dict[str, Any]] = {}
         self._fallback_ids: list[str] = []
@@ -528,7 +560,8 @@ class CatalogRetriever:
         if top_k <= 0:
             return SearchResult.empty()
 
-        routes = _route_specs(state, latest_message)
+        weights = self.weights
+        routes = _route_specs(state, latest_message, weights)
         if not routes:
             return self._fallback_result(top_k)
 
@@ -536,7 +569,7 @@ class CatalogRetriever:
         route_ranks: defaultdict[str, list[tuple[str, int]]] = defaultdict(list)
         for route in routes:
             for rank, product_id in enumerate(self._run_route(route), start=1):
-                scores[product_id] += route.weight / (RRF_OFFSET + rank)
+                scores[product_id] += route.weight / (weights.rrf_offset + rank)
                 route_ranks[product_id].append((route.name, rank))
 
         if not scores:
@@ -575,14 +608,16 @@ class CatalogRetriever:
             product = self.metadata[product_id]
             parts: defaultdict[str, float] = defaultdict(float)
             parts["fusion"] = scores[product_id]
-            parts["fusion"] += 0.12 * max(0, len(route_ranks[product_id]) - 1)
+            parts["fusion"] += weights.multi_route_bonus * max(
+                0, len(route_ranks[product_id]) - 1
+            )
             hits: set[str] = set()
 
             if state.category and state.category.lower() in product["categories"]:
-                parts["category"] += CATEGORY_BOOST * category_weight
+                parts["category"] += weights.category_boost * category_weight
             title_and_category = f"{product['title']} {product['categories']}"
             if latest_phrase and latest_phrase in title_and_category:
-                parts["exact_phrase"] += EXACT_PHRASE_BOOST
+                parts["exact_phrase"] += weights.exact_phrase_boost
             for attribute, values in state.preferences.items():
                 for value in values:
                     if self._preference_matches(attribute, value, product):
@@ -592,13 +627,13 @@ class CatalogRetriever:
                             else 1.0
                         )
                         parts[f"preference:{attribute}"] += (
-                            CONFIRMED_ATTRIBUTE_BOOST * preference_weight
+                            weights.confirmed_attribute_boost * preference_weight
                         )
                         hits.add(attribute)
             for attribute, values in state.removed_preferences.items():
                 for value in values:
                     if self._preference_matches(attribute, value, product):
-                        parts[f"removed:{attribute}"] -= REMOVED_ATTRIBUTE_PENALTY
+                        parts[f"removed:{attribute}"] -= weights.removed_attribute_penalty
             if profile_terms:
                 corpus = product["corpus"]
                 matched_terms = sum(1 for term in profile_terms if term in corpus)
@@ -606,8 +641,10 @@ class CatalogRetriever:
                     parts["profile"] += min(
                         MAX_PROFILE_BOOST, PROFILE_TERM_BOOST * matched_terms
                     )
-            parts["rating"] += min(product["average_rating"], 5.0) * 0.002
-            parts["rating_count"] += math.log1p(product["rating_number"]) * 0.0002
+            parts["rating"] += min(product["average_rating"], 5.0) * weights.rating_coef
+            parts["rating_count"] += (
+                math.log1p(product["rating_number"]) * weights.rating_count_coef
+            )
 
             components[product_id] = parts
             matched[product_id] = hits

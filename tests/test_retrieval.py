@@ -13,6 +13,7 @@ from starter.retrieval import (
     RRF_OFFSET,
     CatalogRetriever,
     RankedCandidate,
+    RetrievalWeights,
     SearchResult,
     _attribute_signature,
     _signature_disagreement,
@@ -428,6 +429,46 @@ class CompoundPhraseRetrievalTest(unittest.TestCase):
         results = self.retriever.search(state, "cotton", 2).recommendations
 
         self.assertEqual(results[0], "COMPOUND_SWEATSHIRT")
+
+
+class RetrievalWeightsTest(unittest.TestCase):
+    def test_default_weights_match_module_constants(self) -> None:
+        weights = RetrievalWeights()
+        self.assertEqual(weights.confirmed_attribute_boost, CONFIRMED_ATTRIBUTE_BOOST)
+        self.assertEqual(weights.rrf_offset, RRF_OFFSET)
+
+    def test_custom_weights_change_ranking(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        catalog_path = Path(directory.name) / "catalog.jsonl"
+        catalog_path.write_text(
+            "".join(json.dumps(product) + "\n" for product in PRODUCTS),
+            encoding="utf-8",
+        )
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="boots",
+            preferences={"material": ("leather",)},
+        )
+
+        default_retriever = CatalogRetriever(catalog_path)
+        self.addCleanup(default_retriever.close)
+        default_first = default_retriever.search(
+            state, "black winter footwear", 2
+        ).recommendations[0]
+        self.assertEqual(default_first, "LEATHER_BOOT")
+
+        rating_led = CatalogRetriever(
+            catalog_path,
+            weights=RetrievalWeights(
+                confirmed_attribute_boost=0.0, category_boost=0.0, rating_coef=50.0
+            ),
+        )
+        self.addCleanup(rating_led.close)
+        rating_led_first = rating_led.search(
+            state, "black winter footwear", 2
+        ).recommendations[0]
+        self.assertEqual(rating_led_first, "SYNTH_BOOT")
 
 
 class BudgetMatchTest(unittest.TestCase):
