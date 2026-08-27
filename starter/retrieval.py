@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from starter.state import ShoppingState
+from starter.synonyms import expand_terms
 
 
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
@@ -235,6 +236,19 @@ def _route_specs(
     )
 
 
+def _synonym_route(
+    state: ShoppingState, latest_message: str, weights: "RetrievalWeights"
+) -> _RouteSpec | None:
+    """Rescue route: expand shopper vocabulary only when direct lexical routes
+    miss, so template-matching sessions are unaffected."""
+    source_values = [state.category] if state.category else []
+    source_values.append(latest_message)
+    terms = expand_terms(lexical_terms(source_values))
+    if not terms:
+        return None
+    return _RouteSpec("synonym", terms, ("title", "categories"), weights.route_synonym)
+
+
 CATEGORY_BOOST = 1.8
 CONFIRMED_ATTRIBUTE_BOOST = 2.4
 EXACT_PHRASE_BOOST = 1.5
@@ -265,6 +279,7 @@ class RetrievalWeights:
     route_relaxed: float = 0.80
     route_latest: float = 1.50
     route_latest_override: float = 2.20
+    route_synonym: float = 0.55
 
 ATTRIBUTE_LEXICONS = {
     "material": frozenset(
@@ -567,10 +582,27 @@ class CatalogRetriever:
 
         scores: defaultdict[str, float] = defaultdict(float)
         route_ranks: defaultdict[str, list[tuple[str, int]]] = defaultdict(list)
+        category_rows = 0
+        ran_category_route = False
         for route in routes:
-            for rank, product_id in enumerate(self._run_route(route), start=1):
+            rows = self._run_route(route)
+            if route.name == "category":
+                ran_category_route = True
+                category_rows = len(rows)
+            for rank, product_id in enumerate(rows, start=1):
                 scores[product_id] += route.weight / (weights.rrf_offset + rank)
                 route_ranks[product_id].append((route.name, rank))
+
+        if not scores or (ran_category_route and category_rows == 0):
+            synonym_route = _synonym_route(state, latest_message, weights)
+            if synonym_route is not None:
+                for rank, product_id in enumerate(
+                    self._run_route(synonym_route), start=1
+                ):
+                    scores[product_id] += synonym_route.weight / (
+                        weights.rrf_offset + rank
+                    )
+                    route_ranks[product_id].append((synonym_route.name, rank))
 
         if not scores:
             return self._fallback_result(top_k)

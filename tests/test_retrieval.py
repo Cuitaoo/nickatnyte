@@ -431,6 +431,69 @@ class CompoundPhraseRetrievalTest(unittest.TestCase):
         self.assertEqual(results[0], "COMPOUND_SWEATSHIRT")
 
 
+class SynonymRouteTest(unittest.TestCase):
+    def test_category_synonym_reaches_matching_product(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        catalog_path = Path(directory.name) / "catalog.jsonl"
+        products = [
+            {
+                "parent_asin": "HOODIE_TOP",
+                "title": "Fleece Hoodie Pullover",
+                "categories": ["Women", "Clothing", "Fashion Hoodies"],
+                "features": ["kangaroo pocket"],
+                "details": {"fabric": "fleece"},
+                "description": ["cozy layer"],
+                "store": "CozyCo",
+                "price": 30.0,
+                "average_rating": 4.5,
+                "rating_number": 300,
+            },
+            {
+                "parent_asin": "DENIM_PANTS",
+                "title": "Classic Denim Pants",
+                "categories": ["Women", "Clothing", "Jeans"],
+                "features": ["five pockets"],
+                "details": {"fabric": "denim"},
+                "description": ["everyday jeans"],
+                "store": "JeanCo",
+                "price": 40.0,
+                "average_rating": 4.4,
+                "rating_number": 500,
+            },
+        ]
+        catalog_path.write_text(
+            "".join(json.dumps(product) + "\n" for product in products),
+            encoding="utf-8",
+        )
+        retriever = CatalogRetriever(catalog_path)
+        self.addCleanup(retriever.close)
+        state = replace(ShoppingState.new("s", {}), category="sweatshirt")
+
+        result = retriever.search(state, "something comfy", 2)
+
+        hoodie = next(
+            (
+                candidate
+                for candidate in result.candidates
+                if candidate.product_id == "HOODIE_TOP"
+            ),
+            None,
+        )
+        self.assertIsNotNone(hoodie)
+        self.assertIn(
+            "synonym", [route_name for route_name, _rank in hoodie.route_ranks]
+        )
+
+        direct_state = replace(ShoppingState.new("s2", {}), category="hoodie")
+        direct = retriever.search(direct_state, "something comfy", 2)
+        for candidate in direct.candidates:
+            self.assertNotIn(
+                "synonym",
+                [route_name for route_name, _rank in candidate.route_ranks],
+            )
+
+
 class RetrievalWeightsTest(unittest.TestCase):
     def test_default_weights_match_module_constants(self) -> None:
         weights = RetrievalWeights()
