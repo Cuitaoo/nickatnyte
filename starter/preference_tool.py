@@ -166,10 +166,11 @@ def _evidence_source(
     attributes: set[str],
     *,
     correction: bool,
+    allow_clarification: bool = True,
 ) -> Literal["unsolicited", "clarification", "correction"]:
     if correction:
         return "correction"
-    if state.previous_ask_attribute in attributes:
+    if allow_clarification and state.previous_ask_attribute in attributes:
         return "clarification"
     return "unsolicited"
 
@@ -185,8 +186,11 @@ def _classify_update(
 ) -> UpdateKind:
     if not patch.reset_product_preferences:
         return "ordinary"
-    keeps_category = patch_category == "unchanged" or _looks_like_attribute_constraint(
-        patch_category
+    current_category = normalize_value(state.category) if state.category else ""
+    keeps_category = (
+        patch_category == "unchanged"
+        or patch_category == current_category
+        or _looks_like_attribute_constraint(patch_category)
     )
     if state.category and keeps_category and values_by_attribute:
         return "preference_correction"
@@ -461,22 +465,26 @@ def apply_preference_patch(
 
     attributes = set(values_by_attribute)
     assigned_terms: set[str] = set()
-    single_attribute = next(iter(attributes)) if len(attributes) == 1 else None
+    terms_by_attribute: dict[str, list[str]] = {
+        attribute: [] for attribute in values_by_attribute
+    }
+    for term in accepted_patch_terms:
+        matching_attributes = [
+            attribute
+            for attribute, values in values_by_attribute.items()
+            if any(term in value or value in term for value in values)
+        ]
+        if len(matching_attributes) == 1:
+            terms_by_attribute[matching_attributes[0]].append(term)
+            assigned_terms.add(term)
     for attribute, values in values_by_attribute.items():
         source_kind = _evidence_source(
             state,
             {attribute},
             correction=update_kind == "preference_correction",
+            allow_clarification=update_kind != "product_change",
         )
-        terms: tuple[str, ...] = ()
-        if single_attribute == attribute:
-            matching_terms = [
-                term
-                for term in accepted_patch_terms
-                if any(term in value or value in term for value in values)
-            ]
-            terms = tuple(matching_terms)
-            assigned_terms.update(matching_terms)
+        terms = tuple(terms_by_attribute[attribute])
         evidence.append(
             PreferenceEvidence(
                 attribute=attribute,
@@ -494,6 +502,7 @@ def apply_preference_patch(
             state,
             attributes,
             correction=update_kind == "preference_correction",
+            allow_clarification=update_kind != "product_change",
         )
         evidence.append(
             PreferenceEvidence(

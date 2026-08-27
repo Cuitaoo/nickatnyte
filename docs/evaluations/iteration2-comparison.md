@@ -6,8 +6,9 @@ Date: 2026-08-27
 
 The selective-evidence revision passes every offline acceptance gate. It improves
 intent-override Hit@10 from `0.666667` to `0.833333` while also improving the
-overall score and every scenario's Hit@10. No OpenAI API calls were made for
-this revision; the paid comparison remains pending an explicit spend decision.
+overall score; scenario Hit@10 either improved or held steady. No OpenAI API
+calls were made for this revision; the paid comparison remains pending an
+explicit spend decision.
 
 ### Offline comparison
 
@@ -43,6 +44,12 @@ than a global candidate-limit or ranking-weight increase.
 
 The selective-evidence revision has not been evaluated in paid mode. Its
 offline run reported zero prompt and completion tokens.
+
+The verified pre-change OpenAI artifact was generated on 2026-08-26, before
+the selective-evidence implementation, using `gpt-5.6-luna` and the documented
+OpenAI-enabled command below. It reported 320,930 prompt tokens and 85,587
+completion tokens. It is retained only as the paid baseline; no paid request
+was made while producing the 2026-08-27 selective-evidence result.
 
 ## Root causes found in the first adaptive implementation
 

@@ -316,6 +316,44 @@ class PreferenceUpdateTest(unittest.TestCase):
             ["clarification", "correction"],
         )
 
+    def test_explicit_same_category_is_still_a_preference_correction(self) -> None:
+        state = replace(
+            ShoppingState.new("s1", {}),
+            category="shoes",
+            turn=1,
+            previous_ask_attribute="feature",
+        )
+        state = apply_preference_patch(
+            state,
+            PreferencePatch(
+                set_preferences=[
+                    PreferenceValue(attribute="feature", value="waterproof")
+                ]
+            ),
+        )
+        state = replace(state, turn=2, previous_ask_attribute="material")
+
+        updated = apply_preference_patch(
+            state,
+            PreferencePatch(
+                reset_product_preferences=True,
+                category="shoes",
+                set_preferences=[
+                    PreferenceValue(attribute="material", value="nylon")
+                ],
+            ),
+        )
+
+        self.assertEqual(updated.category, "shoes")
+        self.assertEqual(
+            updated.preferences,
+            {"feature": ("waterproof",), "material": ("nylon",)},
+        )
+        self.assertEqual(
+            [item.source_kind for item in updated.preference_evidence],
+            ["clarification", "correction"],
+        )
+
     def test_product_change_clears_all_prior_product_evidence(self) -> None:
         state = apply_preference_patch(
             replace(ShoppingState.new("s1", {}), category="shoes"),
@@ -327,9 +365,9 @@ class PreferenceUpdateTest(unittest.TestCase):
         )
         state = replace(
             state,
-            asked_attributes=("material",),
-            previous_ask_attribute="material",
-            no_preference_attributes=frozenset({"material"}),
+            asked_attributes=("color",),
+            previous_ask_attribute="color",
+            no_preference_attributes=frozenset({"color"}),
             latest_recommendations=("OLD_PRODUCT",),
         )
 
@@ -425,6 +463,38 @@ class PreferenceUpdateTest(unittest.TestCase):
         self.assertNotIn("feature", updated.preferences)
         self.assertEqual(updated.search_terms, ())
         self.assertEqual(updated.preference_evidence, ())
+
+    def test_multi_attribute_terms_retire_with_their_matching_attribute(self) -> None:
+        state = apply_preference_patch(
+            ShoppingState.new("s1", {}),
+            PreferencePatch(
+                set_preferences=[
+                    PreferenceValue(attribute="feature", value="machine washable"),
+                    PreferenceValue(attribute="color", value="red"),
+                ],
+                search_terms=["machine washable", "red"],
+            ),
+        )
+
+        updated = apply_preference_patch(
+            state,
+            PreferencePatch(no_preference_attributes=["feature"]),
+        )
+
+        self.assertEqual(updated.preferences, {"color": ("red",)})
+        self.assertEqual(updated.search_terms, ("red",))
+        self.assertEqual(
+            updated.preference_evidence,
+            (
+                PreferenceEvidence(
+                    attribute="color",
+                    values=("red",),
+                    terms=("red",),
+                    source_turn=1,
+                    source_kind="unsolicited",
+                ),
+            ),
+        )
 
     def test_removal_rejects_one_value_and_keeps_other_values(self) -> None:
         state = replace(

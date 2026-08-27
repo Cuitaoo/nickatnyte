@@ -1,7 +1,7 @@
 # Selective Preference Evidence for Intent Corrections
 
-**Date:** 2026-08-27  
-**Status:** Approved concept; pending written-spec review
+**Date:** 2026-08-27
+**Status:** Approved
 
 ## 1. Objective
 

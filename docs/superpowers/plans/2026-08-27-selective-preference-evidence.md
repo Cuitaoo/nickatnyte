@@ -458,7 +458,7 @@ Run:
 ```bash
 OPENAI_ENABLED=false /Users/justin/nickatnyte/.venv/bin/python -m evaluator.local_evaluator \
   --catalog /Users/justin/nickatnyte/data/catalog.jsonl \
-  --public-set /Users/justin/nickatnyte/data/public_set.jsonl \
+  --dataset /Users/justin/nickatnyte/data/public_set.jsonl \
   --output /tmp/selective-preference-offline-results.json
 ```
 
