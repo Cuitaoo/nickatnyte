@@ -1,9 +1,15 @@
 __pycache__/
 *.py[cod]
 .DS_Store
+.worktrees/
+.venv/
 .env
+.venv/
+.venv311/
 results.json
+results_*.json
 data/catalog.jsonl
+data/vector_index/
 data/releases/
 # Organizer-only code, private evaluation data, manifests, and build reports.
 organizer/

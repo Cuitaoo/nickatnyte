@@ -223,7 +223,10 @@ def evaluate(
     sessions: list[dict] = []
     total_prompt_tokens = 0
     total_completion_tokens = 0
-    for sample in samples:
+    total_samples = len(samples)
+    for index, sample in enumerate(samples, start=1):
+        if index == 1 or index % 10 == 0 or index == total_samples:
+            print(f"Evaluating session {index}/{total_samples}...", flush=True)
         session_id = f"public_{uuid.uuid4().hex}"
         agent.reset(session_id, sample["user_profile"])
         target = str(sample["ground_truth"]["parent_asin"])
