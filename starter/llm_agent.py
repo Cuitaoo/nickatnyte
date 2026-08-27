@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from threading import Lock
 from typing import Literal
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -121,6 +122,8 @@ class Interpretation:
 
 class PreferenceInterpreter:
     def __init__(self, model: object) -> None:
+        self._usage_lock = Lock()
+        self._usage_by_session: dict[str, tuple[int, int]] = {}
         self._bound_model = model.bind_tools(
             [update_user_preferences],
             tool_choice="update_user_preferences",
@@ -175,12 +178,25 @@ class PreferenceInterpreter:
             "completion_tokens": 0,
             "tool_applied": False,
         }
+        with self._usage_lock:
+            self._usage_by_session.pop(state.session_id, None)
         try:
             result = self._graph.invoke(workflow_input, config=config)
         except InvalidInterpretation:
             raise
         except Exception as exc:
-            raise InvalidInterpretation("preference tool execution failed") from exc
+            with self._usage_lock:
+                prompt_tokens, completion_tokens = self._usage_by_session.get(
+                    state.session_id, (0, 0)
+                )
+            raise InvalidInterpretation(
+                "preference tool execution failed",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            ) from exc
+        finally:
+            with self._usage_lock:
+                self._usage_by_session.pop(state.session_id, None)
         updated = result.get("shopping_state")
         if not result.get("tool_applied") or not isinstance(updated, ShoppingState):
             raise InvalidInterpretation("preference tool did not update runtime state")
@@ -205,6 +221,11 @@ class PreferenceInterpreter:
         if not isinstance(response, AIMessage):
             raise InvalidInterpretation("model response is not an AI message")
         prompt_tokens, completion_tokens = _usage_from_message(response)
+        with self._usage_lock:
+            self._usage_by_session[shopping_state.session_id] = (
+                prompt_tokens,
+                completion_tokens,
+            )
         if len(response.tool_calls) != 1:
             raise InvalidInterpretation(
                 "model must make exactly one tool call",

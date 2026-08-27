@@ -3,12 +3,19 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from starter.agent import Agent
 from starter.llm_agent import Interpretation, InvalidInterpretation
-from starter.preference_tool import PreferencePatch, PreferenceValue, apply_preference_patch
-from starter.state import ALLOWED_PREFERENCE_ATTRIBUTES
+from starter.preference_tool import (
+    PreferencePatch,
+    PreferenceValue,
+    apply_preference_patch,
+    parse_preference_fallback,
+)
+from starter.state import ALLOWED_PREFERENCE_ATTRIBUTES, ShoppingState
 
 
 CATALOG = [
@@ -150,6 +157,19 @@ class AgentIntegrationTest(unittest.TestCase):
             set(response), {"message", "ask_attribute", "recommendations", "usage"}
         )
 
+    def test_retrieval_failure_uses_deterministic_catalog_fallback(self) -> None:
+        agent = Agent(self.catalog_path, interpreter=None)
+        self.addCleanup(agent.close)
+        agent.reset("s", {"summary": "", "preference_tags": []})
+
+        with patch.object(agent.retriever, "search", side_effect=RuntimeError("boom")):
+            response = agent.respond("s", "shoes", 1, 2)
+
+        self.assertEqual(
+            [item["parent_asin"] for item in response["recommendations"]],
+            ["BLUE_SHOE", "BLACK_BOOT"],
+        )
+
     def test_invalid_model_output_reports_usage_before_falling_back(self) -> None:
         agent = Agent(self.catalog_path, interpreter=UsageFailingInterpreter())
         self.addCleanup(agent.close)
@@ -231,6 +251,100 @@ class AgentIntegrationTest(unittest.TestCase):
         self.assertEqual(state.preferences, {"color": ("red",)})
         self.assertNotIn(first["ask_attribute"], state.asked_attributes[:-1])
         self.assertEqual(second["recommendations"][0]["parent_asin"], "RED_SHIRT")
+
+    def test_same_product_correction_preserves_confirmed_agent_evidence(self) -> None:
+        interpreter = QueueInterpreter(
+            [
+                PreferencePatch(
+                    reset_product_preferences=True,
+                    set_preferences=[
+                        PreferenceValue(attribute="material", value="cotton")
+                    ],
+                )
+            ]
+        )
+        agent = Agent(self.catalog_path, interpreter=interpreter)
+        self.addCleanup(agent.close)
+        agent.reset("s", {"summary": "", "preference_tags": []})
+        confirmed = apply_preference_patch(
+            ShoppingState(
+                session_id="s",
+                user_profile={},
+                category="shirts",
+                previous_ask_attribute="feature",
+                turn=1,
+            ),
+            PreferencePatch(
+                set_preferences=[
+                    PreferenceValue(attribute="feature", value="soft")
+                ]
+            ),
+        )
+        agent._sessions["s"] = replace(
+            confirmed,
+            asked_attributes=("feature", "material"),
+            previous_ask_attribute="material",
+            latest_recommendations=("OLD_PRODUCT",),
+            turn=2,
+        )
+
+        response = agent.respond(
+            "s",
+            "Actually, ignore the old material; I need cotton.",
+            3,
+            2,
+        )
+        state = agent.session_state("s")
+        identifiers = [item["parent_asin"] for item in response["recommendations"]]
+
+        self.assertEqual(
+            state.preferences,
+            {"feature": ("soft",), "material": ("cotton",)},
+        )
+        self.assertNotIn("OLD_PRODUCT", state.latest_recommendations)
+        self.assertEqual(len(identifiers), len(set(identifiers)))
+        self.assertTrue(set(identifiers) <= self.catalog_ids)
+        self.assertLessEqual(len(identifiers), 2)
+        self.assertEqual(
+            set(response),
+            {"message", "ask_attribute", "recommendations", "usage"},
+        )
+
+    def test_model_and_fallback_corrections_have_equivalent_state_semantics(self) -> None:
+        state = apply_preference_patch(
+            replace(ShoppingState.new("s", {}), category="accessories belts"),
+            PreferencePatch(
+                set_preferences=[
+                    PreferenceValue(attribute="feature", value="hand wash only")
+                ]
+            ),
+        )
+        state = replace(state, turn=1)
+        message = "Actually, ignore my earlier preference. What I need is: nylon."
+        fallback_patch = parse_preference_fallback(message, state)
+        model_patch = PreferencePatch(
+            intent_mode="buying",
+            category="nylon",
+            set_preferences=[
+                PreferenceValue(attribute="material", value="nylon")
+            ],
+            reset_product_preferences=True,
+            search_terms=["nylon"],
+        )
+
+        model_state = apply_preference_patch(state, model_patch)
+        fallback_state = apply_preference_patch(state, fallback_patch)
+
+        self.assertEqual(model_state.category, fallback_state.category)
+        self.assertEqual(model_state.preferences, fallback_state.preferences)
+        self.assertEqual(
+            model_state.no_preference_attributes,
+            fallback_state.no_preference_attributes,
+        )
+        self.assertEqual(
+            model_state.preference_evidence,
+            fallback_state.preference_evidence,
+        )
 
     def test_agent_passes_candidate_diagnostics_to_question_policy(self) -> None:
         agent = Agent(self.catalog_path, interpreter=None)

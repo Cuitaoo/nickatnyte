@@ -11,7 +11,7 @@ from starter.llm_agent import (
     InvalidInterpretation,
     PreferenceInterpreter,
 )
-from starter.state import ShoppingState
+from starter.state import PreferenceEvidence, ShoppingState
 
 
 def tool_args(**overrides: object) -> dict:
@@ -79,6 +79,23 @@ class PreferenceInterpreterTest(unittest.TestCase):
         self.assertEqual(result.state.category, "shoes")
         self.assertEqual(result.state.preferences, {"color": ("blue",)})
         self.assertEqual(result.state.search_terms, ("running",))
+        self.assertEqual(
+            result.state.preference_evidence,
+            (
+                PreferenceEvidence(
+                    attribute="color",
+                    values=("blue",),
+                    source_turn=1,
+                    source_kind="unsolicited",
+                ),
+                PreferenceEvidence(
+                    attribute="other",
+                    terms=("running",),
+                    source_turn=1,
+                    source_kind="unsolicited",
+                ),
+            ),
+        )
         self.assertEqual((result.prompt_tokens, result.completion_tokens), (80, 20))
         self.assertEqual(model.calls, 1)
         self.assertEqual(model.bind_arguments["tool_choice"], "update_user_preferences")
@@ -117,6 +134,45 @@ class PreferenceInterpreterTest(unittest.TestCase):
             {"color": ("black",), "material": ("leather",)},
         )
 
+    def test_tool_path_records_answer_to_previous_question_as_clarification(self) -> None:
+        response = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "update_user_preferences",
+                    "args": tool_args(
+                        set_preferences=[
+                            {"attribute": "feature", "value": "machine washable"}
+                        ]
+                    ),
+                    "id": "call_clarification",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        state = replace(
+            ShoppingState.new("s", {}),
+            previous_ask_attribute="feature",
+            turn=1,
+        )
+
+        result = PreferenceInterpreter(FakeChatModel(response)).interpret(
+            "machine washable",
+            state,
+        )
+
+        self.assertEqual(
+            result.state.preference_evidence,
+            (
+                PreferenceEvidence(
+                    attribute="feature",
+                    values=("machine washable",),
+                    source_turn=2,
+                    source_kind="clarification",
+                ),
+            ),
+        )
+
     def test_missing_tool_call_raises_invalid_interpretation(self) -> None:
         interpreter = PreferenceInterpreter(FakeChatModel(AIMessage(content="plain text")))
 
@@ -139,6 +195,37 @@ class PreferenceInterpreterTest(unittest.TestCase):
 
         self.assertEqual(caught.exception.prompt_tokens, 31)
         self.assertEqual(caught.exception.completion_tokens, 7)
+
+    def test_tool_execution_failure_preserves_billable_usage(self) -> None:
+        response = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "update_user_preferences",
+                    "args": tool_args(category="shoes"),
+                    "id": "call_fails",
+                    "type": "tool_call",
+                }
+            ],
+            usage_metadata={
+                "input_tokens": 41,
+                "output_tokens": 9,
+                "total_tokens": 50,
+            },
+        )
+        interpreter = PreferenceInterpreter(FakeChatModel(response))
+
+        with (
+            patch(
+                "starter.llm_agent.apply_preference_patch",
+                side_effect=RuntimeError("storage failed"),
+            ),
+            self.assertRaises(InvalidInterpretation) as caught,
+        ):
+            interpreter.interpret("shoes", ShoppingState.new("s", {}))
+
+        self.assertEqual(caught.exception.prompt_tokens, 41)
+        self.assertEqual(caught.exception.completion_tokens, 9)
 
     def test_more_than_one_tool_call_is_rejected(self) -> None:
         calls = [

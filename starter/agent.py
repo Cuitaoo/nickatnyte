@@ -11,7 +11,7 @@ from starter.llm_agent import (
 )
 from starter.preference_tool import apply_preference_patch, parse_preference_fallback
 from starter.questions import choose_clarification
-from starter.retrieval import CatalogRetriever, SearchResult
+from starter.retrieval import CatalogRetriever
 from starter.state import ShoppingState
 
 
@@ -90,7 +90,7 @@ class Agent:
                 state, str(user_message), requested_count
             )
         except Exception:
-            search_result = SearchResult.empty()
+            search_result = self.retriever.fallback(requested_count)
 
         identifiers = [
             product_id
