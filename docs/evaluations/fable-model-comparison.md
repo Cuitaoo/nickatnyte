@@ -93,13 +93,18 @@ adds `0.35 * minmax(score)` to the existing boost score, so it can reorder
 only near-ties — exactly where the remaining MRR sits — and cannot disturb
 confident decisions:
 
-| Set | Lexical only | + blended cross-encoder |
-|---|---:|---:|
-| Public 200 | 0.822008 | **0.834251** (MRR 0.591 -> 0.632) |
-| Synthetic 200 (unseen targets) | 0.828392 | **0.834063** (MRR 0.651 -> 0.670) |
+| Set | Lexical only | + blend (w=0.35) | + blend (w=0.65, adopted) |
+|---|---:|---:|---:|
+| Public 200 | 0.822008 | 0.834251 | **0.836460** (MRR 0.639) |
+| Synthetic 200 (unseen targets) | 0.828392 | 0.834063 | **0.835402** (MRR 0.674) |
 
 Hit@10 and MTTC are unchanged on both sets: the blend only reorders within
-the top 10. Gated behind `TECHJAM_RERANK_ENABLED` (default off) with
+the top 10. A weight/top-N sweep (0.2-1.0 x {10, 20}) found: top-N 20 is
+strictly worse at every weight (promoting rank-11+ products backfires);
+public score climbs monotonically with weight through 1.0 (0.841) but the
+synthetic set is flat within noise from 0.5-1.0 and peaks at 0.65, so
+weight 0.65 was adopted as the default — chasing the public-set maximum
+beyond that is uncorroborated by unseen data. Gated behind `TECHJAM_RERANK_ENABLED` (default off) with
 `local_files_only` model loading and fall-back-to-original-order on any
 failure. Trade-off: enabling it requires the `requirements-vector.txt`
 extras (`sentence-transformers`, i.e. a torch stack) and adds roughly one

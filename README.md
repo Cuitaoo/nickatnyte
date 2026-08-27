@@ -80,7 +80,7 @@ Retrieval, preference tracking, clarification policy, and ranking are all
 local and deterministic.
 
 An optional **offline cross-encoder reranker** raises the public-set score
-to **0.834** (MRR 0.632) while staying fully offline at inference time. It
+to **0.836** (MRR 0.639) while staying fully offline at inference time. It
 blends `ms-marco-MiniLM-L6-v2` scores into the top-10 ordering and needs
 the `requirements-vector.txt` extras (a torch stack) plus a one-time 23MB
 model download; enable it with `TECHJAM_RERANK_ENABLED=true`. If the extras

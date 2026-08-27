@@ -16,7 +16,7 @@ class CrossEncoderReranker:
         *,
         max_candidates: int = 10,
         batch_size: int = 16,
-        weight: float = 0.35,
+        weight: float = 0.65,
         local_files_only: bool = True,
     ) -> None:
         self.model_name = model_name
@@ -41,7 +41,7 @@ class CrossEncoderReranker:
                 os.getenv("TECHJAM_RERANK_BATCH_SIZE", "16"), minimum=1, maximum=64
             ),
             weight=_bounded_float(
-                os.getenv("TECHJAM_RERANK_WEIGHT", "0.35"), minimum=0.0, maximum=2.0
+                os.getenv("TECHJAM_RERANK_WEIGHT", "0.65"), minimum=0.0, maximum=2.0
             ),
             local_files_only=os.getenv("TECHJAM_RERANK_LOCAL_ONLY", "true").strip().lower()
             not in {"0", "false", "no", "off"},
