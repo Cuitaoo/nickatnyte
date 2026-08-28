@@ -199,6 +199,65 @@ class RetrievalTest(unittest.TestCase):
             results.recommendations, ("SYNTH_BOOT", "LEATHER_BOOT", "HIKING_PACK")
         )
 
+    def test_vector_route_can_rescue_candidate_when_enabled(self) -> None:
+        class FakeVectorIndex:
+            def search_routes_with_scores(
+                self, state, latest_message, top_k, allowed_routes=None
+            ):
+                assert allowed_routes is not None
+                assert "vector_feature" in allowed_routes
+                return {"vector_feature": [("RAIN_RUNNER", 0.9)]}
+
+        self.retriever.vector_index = FakeVectorIndex()
+        self.retriever.vector_weight = 1.0
+        self.retriever.vector_feature_weight = 1.0
+        self.retriever.vector_recall_only = False
+        self.retriever.vector_max_doc_frequency = 50_000
+        self.addCleanup(setattr, self.retriever, "vector_index", None)
+        self.addCleanup(setattr, self.retriever, "vector_weight", 0.0)
+        self.addCleanup(setattr, self.retriever, "vector_feature_weight", 0.05)
+        self.addCleanup(setattr, self.retriever, "vector_recall_only", True)
+        self.addCleanup(setattr, self.retriever, "vector_max_doc_frequency", 750)
+
+        state = replace(
+            ShoppingState.new("s", {}),
+            preferences={"feature": ("marathon",)},
+        )
+        result = self.retriever.search(state, "monsoon sprint", 3)
+
+        self.assertIn("RAIN_RUNNER", result.recommendations)
+        candidate = next(
+            item for item in result.candidates if item.product_id == "RAIN_RUNNER"
+        )
+        self.assertIn(
+            "vector_feature", [route_name for route_name, _rank in candidate.route_ranks]
+        )
+
+    def test_low_similarity_vector_candidate_is_filtered(self) -> None:
+        class FakeVectorIndex:
+            def search_routes_with_scores(
+                self, state, latest_message, top_k, allowed_routes=None
+            ):
+                return {"vector_feature": [("RAIN_RUNNER", 0.1)]}
+
+        self.retriever.vector_index = FakeVectorIndex()
+        self.retriever.vector_feature_weight = 1.0
+        self.retriever.vector_recall_only = False
+        self.retriever.vector_policy = "always"
+        self.retriever.vector_max_doc_frequency = 50_000
+        self.retriever.vector_min_similarity = 0.5
+        self.addCleanup(setattr, self.retriever, "vector_index", None)
+        self.addCleanup(setattr, self.retriever, "vector_feature_weight", 0.05)
+        self.addCleanup(setattr, self.retriever, "vector_recall_only", True)
+        self.addCleanup(setattr, self.retriever, "vector_policy", "adaptive")
+        self.addCleanup(setattr, self.retriever, "vector_max_doc_frequency", 750)
+        self.addCleanup(setattr, self.retriever, "vector_min_similarity", 0.45)
+
+        state = ShoppingState.new("s", {})
+        result = self.retriever.search(state, "monsoon sprint", 3)
+
+        self.assertNotIn("RAIN_RUNNER", result.recommendations)
+
     def test_search_returns_structured_route_evidence(self) -> None:
         result = self.retriever.search(
             ShoppingState.new("s", {}),

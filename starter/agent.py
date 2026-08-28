@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,9 @@ class Agent:
         self.catalog_path = Path(catalog_path)
         self.retriever = CatalogRetriever(self.catalog_path, weights=weights)
         self._sessions: dict[str, ShoppingState] = {}
+        self.defer_low_confidence_recommendations = _env_bool(
+            "TECHJAM_DEFER_LOW_CONFIDENCE_RECOMMENDATIONS", True
+        )
         if interpreter is not _AUTO_INTERPRETER:
             self.interpreter = interpreter
         elif openai_enabled is False:
@@ -76,6 +80,7 @@ class Agent:
         top_k: int,
     ) -> dict:
         state = self.session_state(session_id)
+        previous_category = state.category
         prompt_tokens = 0
         completion_tokens = 0
 
@@ -130,6 +135,14 @@ class Agent:
             int(turn),
             search_result.diagnostics,
         )
+        if self.defer_low_confidence_recommendations and _should_defer_recommendations(
+            state,
+            int(turn),
+            ask_attribute,
+            search_result,
+            previous_category,
+        ):
+            identifiers = []
         asked_attributes = list(state.asked_attributes)
         if ask_attribute and ask_attribute not in asked_attributes:
             asked_attributes.append(ask_attribute)
@@ -174,3 +187,69 @@ class Agent:
             max(0, int(interpretation.prompt_tokens)),
             max(0, int(interpretation.completion_tokens)),
         )
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(os.getenv(name, str(default)))
+    except ValueError:
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _should_defer_recommendations(
+    state: ShoppingState,
+    turn: int,
+    ask_attribute: str | None,
+    search_result: object,
+    previous_category: str | None = None,
+) -> bool:
+    max_turn = _env_int("TECHJAM_DEFER_MAX_TURN", 3, 1, 10)
+    max_non_category_preferences = _env_int(
+        "TECHJAM_DEFER_MAX_NON_CATEGORY_PREFERENCES", 1, 0, 8
+    )
+    min_candidate_count = _env_int("TECHJAM_DEFER_MIN_CANDIDATE_COUNT", 2, 1, 10)
+    min_top_route_count = _env_int(
+        "TECHJAM_DEFER_MIN_TOP_ROUTE_COUNT_TO_RECOMMEND", 99, 1, 99
+    )
+    if (
+        turn > max_turn
+        or ask_attribute is None
+        or state.intent_mode == "buying"
+        or _category_changed(previous_category, state.category)
+    ):
+        return False
+    candidates = getattr(search_result, "candidates", ())[:10]
+    if len(candidates) < min_candidate_count:
+        return False
+    if any(
+        route_name == "fallback"
+        for candidate in candidates
+        for route_name, _rank in getattr(candidate, "route_ranks", ())
+    ):
+        return False
+    non_category_preferences = sum(
+        len(values)
+        for attribute, values in state.preferences.items()
+        if attribute != "category"
+    )
+    if non_category_preferences > max_non_category_preferences:
+        return False
+    top_candidate = candidates[0] if candidates else None
+    top_route_count = len(getattr(top_candidate, "route_ranks", ()))
+    if top_route_count >= min_top_route_count:
+        return False
+    return state.intent_mode in {"browsing", "unknown"}
+
+
+def _category_changed(previous: str | None, current: str | None) -> bool:
+    if not previous or not current:
+        return False
+    return previous.strip().lower() != current.strip().lower()

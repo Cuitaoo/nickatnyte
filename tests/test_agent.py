@@ -224,6 +224,37 @@ class AgentIntegrationTest(unittest.TestCase):
         self.assertTrue(set(identifiers) <= self.catalog_ids)
         self.assertIsNone(response["ask_attribute"])
 
+    def test_low_confidence_deferral_can_be_enabled(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"TECHJAM_DEFER_LOW_CONFIDENCE_RECOMMENDATIONS": "true"},
+        ):
+            agent = Agent(self.catalog_path, interpreter=None)
+        self.addCleanup(agent.close)
+        agent.reset("s", {"summary": "", "preference_tags": []})
+
+        response = agent.respond(
+            "s", "I'm looking for shoes, but I'm still exploring.", 1, 10
+        )
+
+        self.assertIsNotNone(response["ask_attribute"])
+        self.assertEqual(response["recommendations"], [])
+
+    def test_low_confidence_deferral_can_be_disabled(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"TECHJAM_DEFER_LOW_CONFIDENCE_RECOMMENDATIONS": "false"},
+        ):
+            agent = Agent(self.catalog_path, interpreter=None)
+        self.addCleanup(agent.close)
+        agent.reset("s", {"summary": "", "preference_tags": []})
+
+        response = agent.respond(
+            "s", "I'm looking for shoes, but I'm still exploring.", 1, 10
+        )
+
+        self.assertIsNotNone(response["ask_attribute"])
+        self.assertNotEqual(response["recommendations"], [])
 
     def test_intent_override_clears_old_questions_and_recommendations(self) -> None:
         interpreter = QueueInterpreter(

@@ -13,6 +13,11 @@ from typing import Any, Iterable
 from starter.cross_encoder_reranker import CrossEncoderReranker
 from starter.state import ShoppingState
 from starter.synonyms import expand_terms
+from starter.vector_index import (
+    VectorCatalogIndex,
+    category_query_embedding_text,
+    feature_query_embedding_text,
+)
 
 
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
@@ -141,6 +146,35 @@ class _RouteSpec:
 
 def _is_override(message: str) -> bool:
     return bool(OVERRIDE_RE.search(message))
+
+
+def _has_browsing_signal(message: str) -> bool:
+    return bool(
+        re.search(r"\b(browsing|exploring|not sure|just looking)\b", message.lower())
+    )
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(os.getenv(name, str(default)))
+    except ValueError:
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(os.getenv(name, str(default)))
+    except ValueError:
+        parsed = default
+    return max(minimum, min(maximum, parsed))
 
 
 def _signature_disagreement(signatures: Iterable[str]) -> float:
@@ -456,9 +490,40 @@ class CatalogRetriever:
         self.weights = weights or RetrievalWeights()
         self.connection = sqlite3.connect(":memory:")
         self.metadata: dict[str, dict[str, Any]] = {}
+        self._document_frequency: Counter[str] = Counter()
         self._fallback_ids: list[str] = []
         self.cross_encoder_reranker = CrossEncoderReranker.from_environment()
+        self.vector_index: VectorCatalogIndex | None = None
+        self.vector_top_k = _env_int("TECHJAM_VECTOR_TOP_K", 30, 1, 200)
+        self.vector_weight = _env_float("TECHJAM_VECTOR_WEIGHT", 0.0, 0.0, 2.0)
+        self.vector_category_weight = _env_float(
+            "TECHJAM_VECTOR_CATEGORY_WEIGHT", 0.0, 0.0, 2.0
+        )
+        self.vector_feature_weight = _env_float(
+            "TECHJAM_VECTOR_FEATURE_WEIGHT", 0.05, 0.0, 2.0
+        )
+        self.vector_recall_only = _env_bool("TECHJAM_VECTOR_RECALL_ONLY", True)
+        self.vector_max_doc_frequency = _env_int(
+            "TECHJAM_VECTOR_MAX_DOC_FREQUENCY", 750, 1, 50_000
+        )
+        self.vector_min_rare_terms = _env_int(
+            "TECHJAM_VECTOR_MIN_RARE_TERMS", 1, 1, 8
+        )
+        self.vector_policy = (
+            os.getenv("TECHJAM_VECTOR_POLICY", "adaptive").strip().lower()
+            or "adaptive"
+        )
+        self.vector_low_confidence_candidate_limit = _env_int(
+            "TECHJAM_VECTOR_LOW_CONFIDENCE_CANDIDATES", 40, 1, CANDIDATE_LIMIT
+        )
+        self.vector_high_confidence_route_count = _env_int(
+            "TECHJAM_VECTOR_HIGH_CONFIDENCE_ROUTES", 3, 1, 12
+        )
+        self.vector_min_similarity = _env_float(
+            "TECHJAM_VECTOR_MIN_SIMILARITY", 0.45, -1.0, 1.0
+        )
         self._build_index()
+        self._load_vector_index()
 
     def close(self) -> None:
         self.connection.close()
@@ -498,6 +563,13 @@ class CatalogRetriever:
                     "average_rating": self._number(product.get("average_rating")) or 0.0,
                     "rating_number": self._number(product.get("rating_number")) or 0.0,
                 }
+                self._document_frequency.update(
+                    {
+                        token
+                        for token in TOKEN_RE.findall(corpus)
+                        if len(token) > 1 and token not in STOPWORDS
+                    }
+                )
                 batch.append(
                     (
                         parent_asin,
@@ -522,6 +594,14 @@ class CatalogRetriever:
                 -self.metadata[product_id]["rating_number"],
                 product_id,
             ),
+        )
+
+    def _load_vector_index(self) -> None:
+        if not _env_bool("TECHJAM_VECTOR_ENABLED", False):
+            return
+        index_dir = os.getenv("TECHJAM_VECTOR_INDEX_DIR", "data/vector_index")
+        self.vector_index = VectorCatalogIndex.load_if_available(
+            self.catalog_path, index_dir
         )
 
     @staticmethod
@@ -612,6 +692,58 @@ class CatalogRetriever:
                         weights.rrf_offset + rank
                     )
                     route_ranks[product_id].append((synonym_route.name, rank))
+
+        if self.vector_index is not None and (
+            self.vector_weight > 0
+            or self.vector_category_weight > 0
+            or self.vector_feature_weight > 0
+        ):
+            allowed_vector_routes = self._allowed_vector_routes(
+                state, latest_message, scores, route_ranks
+            )
+            try:
+                if allowed_vector_routes:
+                    search_with_scores = getattr(
+                        self.vector_index, "search_routes_with_scores", None
+                    )
+                    vector_routes = (
+                        search_with_scores(
+                            state,
+                            latest_message,
+                            self.vector_top_k,
+                            allowed_routes=allowed_vector_routes,
+                        )
+                        if callable(search_with_scores)
+                        else self.vector_index.search_routes(
+                            state,
+                            latest_message,
+                            self.vector_top_k,
+                            allowed_routes=allowed_vector_routes,
+                        )
+                    )
+                else:
+                    vector_routes = {}
+            except Exception:
+                vector_routes = {}
+            for route_name, vector_rows in vector_routes.items():
+                route_weight = (
+                    0.0
+                    if self.vector_recall_only
+                    else self._vector_route_weight(route_name)
+                )
+                if route_weight <= 0 and self.vector_recall_only is False:
+                    continue
+                for rank, row in enumerate(vector_rows, start=1):
+                    product_id, similarity = self._vector_row(row)
+                    if (
+                        similarity is not None
+                        and similarity < self.vector_min_similarity
+                    ):
+                        continue
+                    if product_id not in self.metadata:
+                        continue
+                    scores[product_id] += route_weight / (weights.rrf_offset + rank)
+                    route_ranks[product_id].append((route_name, rank))
 
         if not scores:
             return self._fallback_result(top_k)
@@ -754,6 +886,100 @@ class CatalogRetriever:
                 relevance=relevance,
             )
         return diagnostics
+
+    def _vector_route_weight(self, route_name: str) -> float:
+        if route_name == "vector_category":
+            return self.vector_category_weight
+        if route_name == "vector_feature":
+            return self.vector_feature_weight
+        return self.vector_weight
+
+    @staticmethod
+    def _vector_row(row: object) -> tuple[str, float | None]:
+        if isinstance(row, tuple) and row:
+            product_id = str(row[0])
+            try:
+                return product_id, float(row[1])
+            except (IndexError, TypeError, ValueError):
+                return product_id, None
+        return str(row), None
+
+    def _allowed_vector_routes(
+        self,
+        state: ShoppingState,
+        latest_message: str,
+        scores: dict[str, float],
+        route_ranks: dict[str, list[tuple[str, int]]],
+    ) -> set[str]:
+        policy = self.vector_policy
+        if policy in {"0", "false", "no", "off"}:
+            return set()
+        return {
+            route_name
+            for route_name in (
+                "vector_category",
+                "vector_feature",
+                "vector",
+            )
+            if self._vector_route_weight(route_name) > 0
+            and self._should_use_vector_route(
+                route_name,
+                state,
+                latest_message,
+                scores,
+                route_ranks,
+            )
+        }
+
+    def _should_use_vector_route(
+        self,
+        route_name: str,
+        state: ShoppingState,
+        latest_message: str,
+        scores: dict[str, float],
+        route_ranks: dict[str, list[tuple[str, int]]],
+    ) -> bool:
+        if route_name == "vector_category":
+            query = category_query_embedding_text(state, latest_message)
+        elif route_name == "vector_feature":
+            query = feature_query_embedding_text(state, latest_message)
+        else:
+            query = latest_message
+        if not query:
+            return False
+
+        policy = self.vector_policy
+        if policy == "always":
+            return True
+
+        rare_terms = [
+            term
+            for term in lexical_terms([query], limit=32)
+            if 0 < self._document_frequency.get(term, 0) <= self.vector_max_doc_frequency
+        ]
+        has_rare_terms = len(rare_terms) >= self.vector_min_rare_terms
+        if policy in {"rare", "rare_terms", "rare-term"}:
+            return has_rare_terms
+        if policy not in {"adaptive", "production"}:
+            return has_rare_terms
+
+        browsing = state.intent_mode == "browsing" or _has_browsing_signal(
+            latest_message
+        )
+        override = _is_override(latest_message)
+        strongest_route_count = max(
+            (len(ranks) for ranks in route_ranks.values()), default=0
+        )
+        lexical_low_confidence = (
+            len(scores) <= self.vector_low_confidence_candidate_limit
+            or strongest_route_count < self.vector_high_confidence_route_count
+        )
+
+        if route_name == "vector_category":
+            return browsing and lexical_low_confidence
+        if route_name == "vector_feature":
+            return has_rare_terms or browsing or override or lexical_low_confidence
+        return lexical_low_confidence
 
     @staticmethod
     def _preference_matches(
