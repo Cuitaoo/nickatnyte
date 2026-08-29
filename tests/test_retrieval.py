@@ -8,12 +8,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from starter.retrieval import (
+    EXACT_IDENTIFIER_BOOST,
     MAX_PROFILE_BOOST,
     CatalogRetriever,
     RankedCandidate,
     RetrievalWeights,
     SearchResult,
     _attribute_signature,
+    _exact_identifiers,
     _signature_disagreement,
     select_diverse_recommendations,
 )
@@ -135,6 +137,66 @@ class RetrievalTest(unittest.TestCase):
         results = self.retriever.search(state, "black winter footwear", 2).recommendations
 
         self.assertEqual(results[0], "LEATHER_BOOT")
+
+    def test_model_number_gets_exact_identifier_boost(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        catalog_path = Path(directory.name) / "catalog.jsonl"
+        products = [
+            {
+                "parent_asin": "MODEL_TARGET",
+                "title": "Bestform Women's Wire Free Bra",
+                "categories": ["Women", "Clothing", "Bras", "Everyday Bras"],
+                "features": ["Hand Wash Only"],
+                "details": {"Item model number": "5006715"},
+                "description": ["100% Cotton cups. Colors: White and Black."],
+                "store": "Bestform",
+                "price": 14.98,
+                "average_rating": 4.2,
+                "rating_number": 96,
+            },
+            {
+                "parent_asin": "GENERIC_BRA",
+                "title": "Hanes 100% Cotton White Everyday Bra",
+                "categories": ["Women", "Clothing", "Bras", "Everyday Bras"],
+                "features": ["Hand Wash Only"],
+                "details": {"Item model number": "ABC123"},
+                "description": ["Cotton white bra."],
+                "store": "Hanes",
+                "price": 12.0,
+                "average_rating": 4.8,
+                "rating_number": 1000,
+            },
+        ]
+        catalog_path.write_text(
+            "".join(json.dumps(product) + "\n" for product in products),
+            encoding="utf-8",
+        )
+        retriever = CatalogRetriever(catalog_path)
+        self.addCleanup(retriever.close)
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="bras everyday bras",
+            preferences={
+                "material": ("cotton",),
+                "color": ("white",),
+                "feature": ("hand wash only", "item model number: 5006715"),
+            },
+        )
+
+        result = retriever.search(
+            state,
+            "For that, what matters is: Hand Wash Only; Item model number: 5006715.",
+            2,
+        )
+
+        self.assertEqual(result.recommendations[0], "MODEL_TARGET")
+        target = next(
+            item for item in result.candidates if item.product_id == "MODEL_TARGET"
+        )
+        self.assertEqual(
+            dict(target.score_components)["exact_identifier"], EXACT_IDENTIFIER_BOOST
+        )
 
     def test_latest_message_route_can_surface_new_category(self) -> None:
         state = replace(
@@ -609,6 +671,31 @@ class RetrievalWeightsTest(unittest.TestCase):
 
 
 class BudgetMatchTest(unittest.TestCase):
+    def test_exact_identifier_extraction_requires_label(self) -> None:
+        self.assertEqual(
+            _exact_identifiers(["Item model number: 5006715."]),
+            ("5006715",),
+        )
+        self.assertEqual(
+            _exact_identifiers(["budget around $59.99", "Date First Available: 2021"]),
+            (),
+        )
+
+    def test_material_color_and_size_match_description(self) -> None:
+        product = {
+            "title": "",
+            "details": "",
+            "features": "",
+            "description": "100% Cotton cups. Colors: White and Black. Sizes: B 36-42.",
+            "price": None,
+        }
+
+        self.assertTrue(
+            CatalogRetriever._preference_matches("material", "cotton", product)
+        )
+        self.assertTrue(CatalogRetriever._preference_matches("color", "white", product))
+        self.assertTrue(CatalogRetriever._preference_matches("size", "36", product))
+
     def test_around_budget_matches_price_band(self) -> None:
         product = {"price": 55.0}
         self.assertTrue(

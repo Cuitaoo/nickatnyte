@@ -22,6 +22,11 @@ from starter.vector_index import (
 
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+IDENTIFIER_LABEL_RE = re.compile(
+    r"\b(?:item\s+model\s+number|model\s+(?:number|no)|style\s+(?:number|no)|"
+    r"part\s+(?:number|no)|mpn|sku)\s*[:#-]?\s*([a-z0-9][a-z0-9._/-]{2,})",
+    re.IGNORECASE,
+)
 STOPWORDS = frozenset(
     {
         "a",
@@ -105,6 +110,7 @@ CANDIDATE_LIMIT = 500
 # and BM25 rank stops mattering, so keep it small enough that lexical evidence
 # still separates candidates that share the same boosts.
 RRF_OFFSET = 8.0
+EXACT_IDENTIFIER_BOOST = 6.0
 
 
 @dataclass(frozen=True)
@@ -202,6 +208,23 @@ def _phrase_expression(values: Iterable[str], columns: tuple[str, ...]) -> str:
     return fts_expression(phrases, columns)
 
 
+def _exact_identifiers(values: Iterable[str]) -> tuple[str, ...]:
+    identifiers: list[str] = []
+    for value in values:
+        for match in IDENTIFIER_LABEL_RE.finditer(str(value)):
+            identifier = match.group(1).strip(" .,:;")
+            tokens = TOKEN_RE.findall(identifier.lower())
+            if not tokens:
+                continue
+            normalized = " ".join(tokens)
+            # Avoid treating ordinary years or prices as product identifiers.
+            if len(tokens) == 1 and tokens[0].isdigit() and len(tokens[0]) < 4:
+                continue
+            if normalized not in identifiers:
+                identifiers.append(normalized)
+    return tuple(identifiers)
+
+
 def _route_specs(
     state: ShoppingState, latest_message: str, weights: "RetrievalWeights"
 ) -> tuple[_RouteSpec, ...]:
@@ -217,6 +240,14 @@ def _route_specs(
         for value in state.preferences.get(attribute, ())
     ]
     latest_values = [latest_message]
+    identifiers = _exact_identifiers(
+        [
+            latest_message,
+            *functional_values,
+            *attribute_values,
+            *state.search_terms,
+        ]
+    )
     relaxed_values = [
         *category_values,
         *functional_values,
@@ -249,6 +280,12 @@ def _route_specs(
                 ("title", "features", "details", "description"),
                 weights.route_exact_phrase,
                 True,
+            ),
+            _RouteSpec(
+                "identifier",
+                identifiers,
+                ("title", "features", "details", "description"),
+                weights.route_exact_phrase,
             ),
             _RouteSpec(
                 "attribute",
@@ -439,7 +476,10 @@ def _attribute_text(product: dict[str, Any], attribute: str) -> str:
     if attribute == "category":
         return product["categories"]
     if attribute in {"material", "color", "size"}:
-        return f"{product['title']} {product['details']} {product['features']}"
+        return (
+            f"{product['title']} {product['details']} "
+            f"{product['features']} {product['description']}"
+        )
     if attribute == "style":
         return f"{product['title']} {product['categories']} {product['details']}"
     if attribute == "brand":
@@ -766,6 +806,17 @@ class CatalogRetriever:
 
         latest_phrase = " ".join(lexical_terms([latest_message]))
         latest_lower = latest_message.lower()
+        exact_identifiers = _exact_identifiers(
+            [
+                latest_message,
+                *(
+                    value
+                    for values in state.preferences.values()
+                    for value in values
+                ),
+                *state.search_terms,
+            ]
+        )
         override_message = _is_override(latest_message)
         category_weight = (
             0.15
@@ -791,6 +842,10 @@ class CatalogRetriever:
             title_and_category = f"{product['title']} {product['categories']}"
             if latest_phrase and latest_phrase in title_and_category:
                 parts["exact_phrase"] += weights.exact_phrase_boost
+            for identifier in exact_identifiers:
+                if self._identifier_matches(identifier, product):
+                    parts["exact_identifier"] += EXACT_IDENTIFIER_BOOST
+                    hits.add("feature")
             for attribute, values in state.preferences.items():
                 for value in values:
                     if self._preference_matches(attribute, value, product):
@@ -996,4 +1051,12 @@ class CatalogRetriever:
             if any(term in value for term in ("around", "about", "approximately")):
                 return 0.75 * budget <= price <= 1.25 * budget
             return False
-        return value.lower() in _attribute_text(product, attribute)
+        return value.lower() in _attribute_text(product, attribute).lower()
+
+    @staticmethod
+    def _identifier_matches(identifier: str, product: dict[str, Any]) -> bool:
+        tokens = TOKEN_RE.findall(identifier.lower())
+        if not tokens:
+            return False
+        needle = " ".join(tokens)
+        return needle in " ".join(TOKEN_RE.findall(product["corpus"].lower()))
