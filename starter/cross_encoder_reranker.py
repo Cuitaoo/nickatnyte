@@ -19,12 +19,14 @@ class CrossEncoderReranker:
         batch_size: int = 16,
         weight: float = 0.65,
         local_files_only: bool = True,
+        text_format: str = "legacy",
     ) -> None:
         self.model_name = model_name
         self.max_candidates = max(0, int(max_candidates))
         self.batch_size = max(1, int(batch_size))
         self.weight = max(0.0, float(weight))
         self.local_files_only = local_files_only
+        self.text_format = text_format.strip().lower() or "legacy"
         self._model = None
 
     @classmethod
@@ -46,6 +48,7 @@ class CrossEncoderReranker:
             ),
             local_files_only=os.getenv("TECHJAM_RERANK_LOCAL_ONLY", "true").strip().lower()
             not in {"0", "false", "no", "off"},
+            text_format=os.getenv("TECHJAM_RERANK_TEXT_FORMAT", "legacy"),
         )
 
     def rerank(
@@ -61,8 +64,11 @@ class CrossEncoderReranker:
         candidates = [item for item in ranked_ids[: self.max_candidates] if item in metadata]
         if len(candidates) <= 1:
             return ranked_ids
-        query = _query_text(state, latest_message)
-        pairs = [(query, _product_text(metadata[product_id])) for product_id in candidates]
+        query = _query_text(state, latest_message, self.text_format)
+        pairs = [
+            (query, _product_text(metadata[product_id], self.text_format))
+            for product_id in candidates
+        ]
         try:
             raw_scores = self._cross_encoder().predict(
                 pairs,
@@ -90,7 +96,36 @@ class CrossEncoderReranker:
         return self._model
 
 
-def _query_text(state: ShoppingState, latest_message: str) -> str:
+def _query_text(
+    state: ShoppingState, latest_message: str, text_format: str = "legacy"
+) -> str:
+    if text_format not in {"structured", "legacy"}:
+        text_format = "legacy"
+    if text_format == "legacy":
+        return _legacy_query_text(state, latest_message)
+
+    must_match: list[str] = []
+    for attribute, values in sorted(state.preferences.items()):
+        if values:
+            must_match.append(f"{attribute}: {', '.join(values)}")
+    avoid: list[str] = []
+    for attribute, values in sorted(state.removed_preferences.items()):
+        if values:
+            avoid.append(f"{attribute}: {', '.join(values)}")
+
+    parts = [f"Find clothing product for shopper request: {latest_message}"]
+    if state.category:
+        parts.append(f"Target product category: {state.category}")
+    if must_match:
+        parts.append(f"Must match shopper preferences: {'; '.join(must_match)}")
+    if avoid:
+        parts.append(f"Must avoid: {'; '.join(avoid)}")
+    if state.search_terms:
+        parts.append(f"Additional search terms: {', '.join(state.search_terms)}")
+    return "\n".join(parts)
+
+
+def _legacy_query_text(state: ShoppingState, latest_message: str) -> str:
     parts = [latest_message]
     if state.category:
         parts.append(f"category: {state.category}")
@@ -105,7 +140,24 @@ def _query_text(state: ShoppingState, latest_message: str) -> str:
     return "\n".join(parts)
 
 
-def _product_text(product: dict[str, Any]) -> str:
+def _product_text(product: dict[str, Any], text_format: str = "legacy") -> str:
+    if text_format not in {"structured", "legacy"}:
+        text_format = "legacy"
+    if text_format == "legacy":
+        return _legacy_product_text(product)
+
+    parts = [
+        f"Product title: {product.get('title', '')}",
+        f"Product category: {product.get('categories', '')}",
+        f"Brand: {product.get('store', '')}",
+        f"Product features: {product.get('features', '')}",
+        f"Product details: {product.get('details', '')}",
+        f"Product description: {product.get('description', '')}",
+    ]
+    return "\n".join(part for part in parts if part.strip())
+
+
+def _legacy_product_text(product: dict[str, Any]) -> str:
     return "\n".join(
         [
             f"title: {product.get('title', '')}",

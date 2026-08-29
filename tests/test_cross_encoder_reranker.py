@@ -70,6 +70,9 @@ class CrossEncoderRerankerTest(unittest.TestCase):
         query = _query_text(state, "latest")
         self.assertIn("material: suede", query)
         self.assertIn("avoid material: leather", query)
+        structured_query = _query_text(state, "latest", "structured")
+        self.assertIn("Must match shopper preferences: material: suede", structured_query)
+        self.assertIn("Must avoid: material: leather", structured_query)
 
     def test_blend_cannot_overcome_large_score_gaps(self) -> None:
         reranker = self._reranker([-10.0, 10.0, -10.0])
