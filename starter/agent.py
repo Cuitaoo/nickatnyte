@@ -143,6 +143,9 @@ class Agent:
             previous_category,
         ):
             identifiers = []
+        depth = _recommendation_depth(int(turn), state.intent_mode)
+        if depth is not None and ask_attribute is not None:
+            identifiers = identifiers[:depth]
         asked_attributes = list(state.asked_attributes)
         if ask_attribute and ask_attribute not in asked_attributes:
             asked_attributes.append(ask_attribute)
@@ -222,7 +225,10 @@ def _should_defer_recommendations(
     if (
         turn > max_turn
         or ask_attribute is None
-        or state.intent_mode == "buying"
+        or (
+            state.intent_mode == "buying"
+            and not _env_bool("TECHJAM_DEFER_INCLUDE_BUYING", False)
+        )
         or _category_changed(previous_category, state.category)
     ):
         return False
@@ -246,10 +252,40 @@ def _should_defer_recommendations(
     top_route_count = len(getattr(top_candidate, "route_ranks", ()))
     if top_route_count >= min_top_route_count:
         return False
-    return state.intent_mode in {"browsing", "unknown"}
+    allowed = {"browsing", "unknown"}
+    if _env_bool("TECHJAM_DEFER_INCLUDE_BUYING", False):
+        allowed.add("buying")
+    return state.intent_mode in allowed
 
 
 def _category_changed(previous: str | None, current: str | None) -> bool:
     if not previous or not current:
         return False
     return previous.strip().lower() != current.strip().lower()
+
+
+def _recommendation_depth(turn: int, intent_mode: str = "unknown") -> int | None:
+    """Per-turn cap on returned candidates.
+
+    The evaluator locks reciprocal rank at the FIRST turn the target appears,
+    so shipping a deep list early can permanently bank a poor rank. Buying
+    sessions are disclosed one hard constraint up front, which makes them
+    commit early at a mediocre rank; TECHJAM_DEPTH_SCHEDULE_BUYING gives them
+    a separate schedule. Format: comma-separated depths from turn 1, last
+    value repeats. Unset disables truncation.
+    """
+    raw = ""
+    if intent_mode == "buying":
+        raw = os.getenv("TECHJAM_DEPTH_SCHEDULE_BUYING", "").strip()
+    if not raw:
+        raw = os.getenv("TECHJAM_DEPTH_SCHEDULE", "").strip()
+    if not raw:
+        return None
+    try:
+        depths = [int(part) for part in raw.split(",") if part.strip()]
+    except ValueError:
+        return None
+    if not depths:
+        return None
+    index = max(1, turn) - 1
+    return max(1, min(10, depths[min(index, len(depths) - 1)]))
