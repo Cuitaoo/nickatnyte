@@ -226,20 +226,81 @@ class ReAskPolicyTest(unittest.TestCase):
         message, attribute = choose_clarification(exhausted, 4, {})
         self.assertIsNone(attribute)
 
+    def test_other_is_asked_immediately_after_preference_override(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="watches",
+            preferences={"feature": ("water resistant",)},
+            last_update_type="replace_preferences",
+            turn=2,
+        )
+
+        message, attribute = choose_clarification(
+            state,
+            3,
+            broad_diagnostics(),
+        )
+
+        self.assertEqual(attribute, "other")
+
+    def test_initial_product_classification_is_not_treated_as_override(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            last_update_type="product_change",
+            turn=0,
+        )
+
+        message, attribute = choose_clarification(
+            state,
+            1,
+            broad_diagnostics(),
+        )
+
+        self.assertEqual(attribute, "category")
+
+    def test_other_is_asked_after_two_consecutive_no_preference_answers(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="shoes",
+            consecutive_no_preference_turns=2,
+        )
+
+        message, attribute = choose_clarification(
+            state,
+            4,
+            broad_diagnostics(),
+        )
+
+        self.assertEqual(attribute, "other")
+
+    def test_one_no_preference_answer_does_not_force_other(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="shoes",
+            consecutive_no_preference_turns=1,
+        )
+
+        message, attribute = choose_clarification(
+            state,
+            3,
+            {"material": self._diag("material")},
+        )
+
+        self.assertEqual(attribute, "material")
+
 
 if __name__ == "__main__":
     unittest.main()
 
 
 class PromoteOtherTest(unittest.TestCase):
-    """Triggers that ask the open-ended question before facets are exhausted."""
+    """Env gating over the structured early-`other` triggers.
+
+    Both triggers default on; these cover the switches and the boundaries.
+    """
 
     def setUp(self):
-        for name in (
-            "TECHJAM_OTHER_AFTER_OVERRIDE",
-            "TECHJAM_OTHER_AFTER_NO_PREFERENCE",
-        ):
-            os.environ.pop(name, None)
+        self._clear()
         self.addCleanup(self._clear)
 
     def _clear(self):
@@ -250,70 +311,65 @@ class PromoteOtherTest(unittest.TestCase):
             os.environ.pop(name, None)
 
     def _state(self, **kwargs):
-        state = ShoppingState.new("s", {})
-        return replace(state, category="jeans", **kwargs)
+        return replace(ShoppingState.new("s", {}), category="jeans", **kwargs)
 
-    def test_disabled_by_default(self):
-        state = self._state(no_preference_attributes=frozenset({"color", "size"}))
-        _, attribute = choose_clarification(
-            state, 3, broad_diagnostics(), "Actually, ignore my earlier preference."
-        )
-        self.assertNotEqual(attribute, "other")
-
-    def test_override_trigger(self):
-        os.environ["TECHJAM_OTHER_AFTER_OVERRIDE"] = "true"
-        state = self._state()
-        _, attribute = choose_clarification(
-            state, 3, broad_diagnostics(), "Actually, ignore my earlier preference."
-        )
+    def test_override_trigger_on_by_default(self):
+        state = self._state(last_update_type="replace_preferences", turn=2)
+        _, attribute = choose_clarification(state, 3, broad_diagnostics())
         self.assertEqual(attribute, "other")
 
-    def test_override_trigger_ignores_ordinary_messages(self):
-        os.environ["TECHJAM_OTHER_AFTER_OVERRIDE"] = "true"
-        state = self._state()
-        _, attribute = choose_clarification(
-            state, 3, broad_diagnostics(), "For that, what matters is: cotton."
-        )
+    def test_override_trigger_can_be_disabled(self):
+        os.environ["TECHJAM_OTHER_AFTER_OVERRIDE"] = "false"
+        state = self._state(last_update_type="replace_preferences", turn=2)
+        _, attribute = choose_clarification(state, 3, broad_diagnostics())
         self.assertNotEqual(attribute, "other")
 
-    def test_no_preference_threshold(self):
-        os.environ["TECHJAM_OTHER_AFTER_NO_PREFERENCE"] = "2"
-        below = self._state(no_preference_attributes=frozenset({"color"}))
-        _, attribute = choose_clarification(below, 3, broad_diagnostics(), "hello")
+    def test_ordinary_update_does_not_trigger(self):
+        state = self._state(last_update_type="merge", turn=2)
+        _, attribute = choose_clarification(state, 3, broad_diagnostics())
         self.assertNotEqual(attribute, "other")
 
-        at = self._state(no_preference_attributes=frozenset({"color", "size"}))
-        _, attribute = choose_clarification(at, 3, broad_diagnostics(), "hello")
+    def test_no_preference_threshold_boundary(self):
+        below = self._state(consecutive_no_preference_turns=1)
+        _, attribute = choose_clarification(below, 3, broad_diagnostics())
+        self.assertNotEqual(attribute, "other")
+
+        at = self._state(consecutive_no_preference_turns=2)
+        _, attribute = choose_clarification(at, 3, broad_diagnostics())
         self.assertEqual(attribute, "other")
 
-    def test_zero_threshold_is_off(self):
+    def test_no_preference_threshold_is_configurable(self):
+        os.environ["TECHJAM_OTHER_AFTER_NO_PREFERENCE"] = "3"
+        state = self._state(consecutive_no_preference_turns=2)
+        _, attribute = choose_clarification(state, 3, broad_diagnostics())
+        self.assertNotEqual(attribute, "other")
+
+    def test_zero_threshold_disables_the_counter_trigger(self):
         os.environ["TECHJAM_OTHER_AFTER_NO_PREFERENCE"] = "0"
-        state = self._state(no_preference_attributes=frozenset({"color", "size", "brand"}))
-        _, attribute = choose_clarification(state, 3, broad_diagnostics(), "hello")
+        state = self._state(consecutive_no_preference_turns=5)
+        _, attribute = choose_clarification(state, 3, broad_diagnostics())
         self.assertNotEqual(attribute, "other")
 
     def test_not_asked_again_once_declined(self):
-        """A shopper who said no preference for 'other' is not re-asked."""
-        os.environ["TECHJAM_OTHER_AFTER_OVERRIDE"] = "true"
-        state = self._state(no_preference_attributes=frozenset({"other", "color"}))
-        _, attribute = choose_clarification(
-            state, 3, broad_diagnostics(), "Actually, ignore my earlier preference."
+        state = self._state(
+            last_update_type="replace_preferences",
+            turn=2,
+            no_preference_attributes=frozenset({"other"}),
         )
+        _, attribute = choose_clarification(state, 3, broad_diagnostics())
         self.assertNotEqual(attribute, "other")
 
     def test_category_question_still_wins(self):
-        """A real product change is asked before the open-ended fallback."""
-        os.environ["TECHJAM_OTHER_AFTER_OVERRIDE"] = "true"
-        state = replace(ShoppingState.new("s", {}), category=None)
-        _, attribute = choose_clarification(
-            state, 2, broad_diagnostics(), "Actually, ignore that. I need hiking boots."
+        state = replace(
+            ShoppingState.new("s", {}),
+            category=None,
+            last_update_type="product_change",
+            turn=2,
         )
+        _, attribute = choose_clarification(state, 2, broad_diagnostics())
         self.assertEqual(attribute, "category")
 
     def test_turn_cap_still_applies(self):
-        os.environ["TECHJAM_OTHER_AFTER_OVERRIDE"] = "true"
-        state = self._state()
-        _, attribute = choose_clarification(
-            state, 10, broad_diagnostics(), "Actually, ignore my earlier preference."
-        )
+        state = self._state(last_update_type="replace_preferences", turn=2)
+        _, attribute = choose_clarification(state, 10, broad_diagnostics())
         self.assertIsNone(attribute)

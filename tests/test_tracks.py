@@ -44,11 +44,11 @@ class ResolveTrackTest(unittest.TestCase):
         os.environ["TECHJAM_DUAL_TRACK_BROWSING"] = "true"
         self.assertIs(resolve_track("browsing"), BROWSING)
 
-    def test_override_turns_stay_neutral(self):
+    def test_product_change_turns_stay_neutral(self):
         """An override is classified as buying, but the context just changed."""
-        self.assertIs(resolve_track("buying", is_override=True), NEUTRAL)
+        self.assertIs(resolve_track("buying", is_product_change=True), NEUTRAL)
         os.environ["TECHJAM_DUAL_TRACK_BROWSING"] = "true"
-        self.assertIs(resolve_track("browsing", is_override=True), NEUTRAL)
+        self.assertIs(resolve_track("browsing", is_product_change=True), NEUTRAL)
 
 
 class ApplyTrackTest(unittest.TestCase):

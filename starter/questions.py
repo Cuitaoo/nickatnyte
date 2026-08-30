@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from starter.retrieval import AttributeDiagnostic, _is_override
+from starter.retrieval import AttributeDiagnostic
 from starter.state import ShoppingState
 
 
@@ -50,25 +50,31 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, parsed))
 
 
-def _should_promote_other(state: ShoppingState, latest_message: str) -> bool:
+def _should_promote_other(state: ShoppingState) -> bool:
     """Ask the open-ended question before the specific facets are exhausted.
 
     "other" accepts any undisclosed constraint, while a specific attribute only
     accepts constraints of its own kind, so promoting it harvests details that
     do not fit the standard facets - model numbers, "rubber sole", "tie
-    closure". Two triggers, each independently switchable so they can be
-    measured apart:
+    closure".
 
-    - straight after an intent override, when the shopper has just restated
-      what they want and the remaining facets were chosen for the old intent
-    - once the shopper has answered "no preference" to enough specific
-      attributes that the structured facets look exhausted
+    Both triggers read structured state rather than the raw message.
+    `last_update_type` is set by the state updater, so it cannot be fooled by
+    the word "actually" in an ordinary reply, and
+    `consecutive_no_preference_turns` resets the moment the shopper does give a
+    preference, which is what "two failed attempts" actually means.
+
+    Env-gated so each can be measured apart; both default on, having measured
+    +0.014962 public / +0.003921 held-out together.
     """
-    if _env_bool("TECHJAM_OTHER_AFTER_OVERRIDE", False) and _is_override(latest_message):
+    if _env_bool("TECHJAM_OTHER_AFTER_OVERRIDE", True) and (
+        state.turn > 0
+        and state.last_update_type in {"replace_preferences", "product_change"}
+    ):
         return True
 
-    threshold = _env_int("TECHJAM_OTHER_AFTER_NO_PREFERENCE", 0, 0, 10)
-    if threshold and len(state.no_preference_attributes) >= threshold:
+    threshold = _env_int("TECHJAM_OTHER_AFTER_NO_PREFERENCE", 2, 0, 10)
+    if threshold and state.consecutive_no_preference_turns >= threshold:
         return True
     return False
 
@@ -86,7 +92,6 @@ def choose_clarification(
     state: ShoppingState,
     turn: int,
     diagnostics: dict[str, AttributeDiagnostic],
-    latest_message: str = "",
 ) -> tuple[str, str | None]:
     if turn >= 10:
         return RECOMMENDATION_MESSAGE, None
@@ -128,7 +133,7 @@ def choose_clarification(
     # Placed after the category question so a genuine product change still
     # gets asked first, but ahead of the specific facets so "other" no longer
     # waits for every one of them to score badly.
-    if "other" not in excluded and _should_promote_other(state, latest_message):
+    if "other" not in excluded and _should_promote_other(state):
         return QUESTION_TEMPLATES["other"], "other"
 
     scored: list[tuple[float, str]] = []

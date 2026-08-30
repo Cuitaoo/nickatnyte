@@ -163,6 +163,14 @@ def _is_override(message: str) -> bool:
     return bool(OVERRIDE_RE.search(message))
 
 
+def _is_product_change(state: ShoppingState, message: str) -> bool:
+    if state.last_update_type == "product_change":
+        return True
+    # Direct retriever callers do not pass through the state updater. Keep the
+    # legacy signal for those turn-zero calls without overriding structured state.
+    return state.turn == 0 and _is_override(message)
+
+
 def _has_browsing_signal(message: str) -> bool:
     return bool(
         re.search(r"\b(browsing|exploring|not sure|just looking)\b", message.lower())
@@ -310,7 +318,7 @@ def _route_specs(
                 tuple(lexical_terms(latest_values)),
                 (),
                 weights.route_latest_override
-                if _is_override(latest_message)
+                if _is_product_change(state, latest_message)
                 else weights.route_latest,
             ),
         )
@@ -712,7 +720,7 @@ class CatalogRetriever:
 
         weights = self.weights
         track = (
-            resolve_track(state.intent_mode, _is_override(latest_message))
+            resolve_track(state.intent_mode, _is_product_change(state, latest_message))
             if dual_track_enabled()
             else None
         )
@@ -830,7 +838,7 @@ class CatalogRetriever:
                 *state.search_terms,
             ]
         )
-        override_message = _is_override(latest_message)
+        override_message = _is_product_change(state, latest_message)
         category_weight = (
             0.15
             if override_message
@@ -1054,7 +1062,7 @@ class CatalogRetriever:
         browsing = state.intent_mode == "browsing" or _has_browsing_signal(
             latest_message
         )
-        override = _is_override(latest_message)
+        override = _is_product_change(state, latest_message)
         strongest_route_count = max(
             (len(ranks) for ranks in route_ranks.values()), default=0
         )

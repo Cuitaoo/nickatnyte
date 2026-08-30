@@ -90,18 +90,18 @@ def browsing_track_enabled() -> bool:
     return _env_bool("TECHJAM_DUAL_TRACK_BROWSING", False)
 
 
-def resolve_track(intent_mode: str, is_override: bool = False) -> TrackProfile:
+def resolve_track(intent_mode: str, is_product_change: bool = False) -> TrackProfile:
     """Pick the operating point for this turn's intent.
 
-    An override turn stays neutral. `preference_tool` classifies an override as
-    buying intent, so tightening would fire exactly when the category context
-    has just been rewritten and the confirmed attributes may belong to the
-    product the shopper has abandoned.
+    A product-change turn stays neutral. `preference_tool` classifies an
+    override as buying intent, so tightening would fire exactly when the
+    category context has just been rewritten and the confirmed attributes may
+    belong to the product the shopper has abandoned.
 
     The browsing profile is opt-in: browsing is already the strongest scenario,
     so it is left untouched unless deliberately switched on.
     """
-    if is_override:
+    if is_product_change:
         return NEUTRAL
     if intent_mode == "buying":
         return BUYING

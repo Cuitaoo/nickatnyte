@@ -589,3 +589,150 @@ the final report can justify it as production search logic
 ```
 
 Do not chase public-set-only gains. The hidden 800 likely rewards robust ranking behavior more than brittle tuning.
+
+## Implemented: unified LLM state updater and intent override
+
+The LLM interpreter and intent override detector now share one typed state-update
+contract. The model must emit exactly one of:
+
+```text
+merge
+replace_preferences
+product_change
+```
+
+Semantics:
+
+```text
+merge:
+  preserve current product state and add/remove explicit constraints
+
+replace_preferences:
+  preserve category and unrelated confirmed attributes
+  replace only the attributes named in the patch
+
+product_change:
+  clear product-specific category, preferences, question history, and old results
+  preserve the safe aggregate user profile
+```
+
+The deterministic mutation layer remains authoritative. If the model requests a
+destructive product reset but supplies only an attribute change, the transition is
+downgraded to `replace_preferences`. Invalid tool output, timeouts, a missing key,
+or disabled network access still use the local parser.
+
+The prompt now explicitly covers:
+
+- whole-product changes versus same-product corrections
+- active preference additions and replacements
+- explicit value removal
+- no-preference replies
+- direct answers to the previous clarification question
+- concise category extraction, including explicit audience terms
+- verbatim extraction of explicit shopper evidence without query rewriting
+- exact model/part identifiers as search evidence
+- prevention of profile data becoming a hard active constraint
+
+The model-facing schema restricts attributes and list/text sizes. The LLM never
+generates product IDs, searches the catalog, or performs final ranking. A custom
+`OPENAI_BASE_URL` is supported for OpenAI-compatible local endpoints such as
+Ollama; custom endpoints use Chat Completions instead of the Responses API.
+
+Current test posture: LLM query rewriting is intentionally disabled. Category,
+preference values, removal values, and free search terms are accepted only when
+their token sequence appears explicitly in the latest shopper message. Outputs
+such as `trainers -> sneakers` or `morning jog -> running` are discarded. The
+separate deterministic synonym retrieval route is unchanged.
+
+Offline full-200 result with the existing vector + cross-encoder configuration:
+
+```text
+score=0.857826
+hit@10=0.990
+mrr=0.708752
+mttc=3.490
+```
+
+Compared with description + exact identifier matching (`0.854438`):
+
+```text
+score +0.003388
+hit   +0.005
+mrr   -0.000042
+mttc  -0.045 turns
+```
+
+Intent-override slice:
+
+```text
+before: hit@10=0.966667, mrr=0.700093, mttc=5.033333
+after:  hit@10=1.000000, mrr=0.699815, mttc=4.733333
+```
+
+Only intent-override sessions changed in the offline comparison. The previous
+`public_0144` miss became a turn-6 rank-10 hit. This supports the intended
+production explanation: structured transition semantics recover context and avoid
+confusing a preference correction with a full product reset.
+
+Validation status:
+
+```text
+145 unit tests pass
+offline public evaluator passes
+full 200-session OpenAI evaluator passes
+```
+
+Full-200 OpenAI state-update result with the current vector + cross-encoder
+configuration and the early-`other` policy:
+
+```text
+score=0.860133
+hit@10=0.980
+mrr=0.716442
+mttc=3.240
+prompt tokens=774930
+completion tokens=88465
+total tokens=863395
+```
+
+Scenario breakdown:
+
+```text
+boundary:        hit@10=1.000000, mrr=0.789286, mttc=4.000
+browsing:        hit@10=0.987500, mrr=0.797857, mttc=3.475
+buying:          hit@10=0.987500, mrr=0.628199, mttc=2.400
+intent_override: hit@10=0.933333, mrr=0.710370, mttc=4.600
+```
+
+This result is evidence that the complete current stack runs successfully with
+the OpenAI state updater. It is not a clean estimate of the LLM's isolated
+contribution because the working tree also includes newer state and question
+policy changes. Run the same commit with `OPENAI_ENABLED=false` for a controlled
+online-versus-offline comparison.
+
+## Implemented: earlier `other` after low-value clarification or override
+
+The question policy now asks `other` when either:
+
+```text
+- the shopper has given two consecutive no-preference answers; or
+- a mid-session replace_preferences/product_change transition just occurred.
+```
+
+The rule is deterministic; the LLM does not choose the question. The model may
+classify the state transition, after which the validated `last_update_type`
+drives the question policy. `other` remains unavailable after the shopper has
+explicitly said they have no additional preference for it.
+
+This behavior is included in the `0.860133` OpenAI run. Its isolated metric
+effect has not yet been measured on the current commit.
+
+Competition relevance:
+
+- Directly addresses the rubric's structured constraint state and intent override
+  direction.
+- Uses one bounded model call per turn and has deterministic failure recovery.
+- Separates language understanding from retrieval and ranking, so model output
+  cannot invent catalog products.
+- Improves the public metric through a transferable state-management correction,
+  not target IDs, public-label access, or evaluator manipulation.
