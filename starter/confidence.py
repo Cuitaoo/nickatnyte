@@ -37,6 +37,10 @@ class ConfidenceSignals:
     """How separable this turn's ranking is."""
 
     margin: float = 0.0
+    # Same gap as a fraction of the leading score. `margin` is in raw score
+    # units, so its thresholds silently change meaning if RetrievalWeights is
+    # retuned; this one does not.
+    margin_ratio: float = 0.0
     pool_size: int = 0
     route_agreement: int = 0
     constraint_coverage: float = 0.0
@@ -158,6 +162,8 @@ def assess(candidates: Any, state: Any) -> ConfidenceSignals:
     # compared two arbitrary scores and could return a negative "margin".
     ordered = sorted((float(item.score) for item in items), reverse=True)
     margin = ordered[0] - ordered[1] if len(ordered) > 1 else ordered[0]
+    denominator = max(abs(ordered[0]), 1e-9)
+    margin_ratio = max(0.0, min(1.0, margin / denominator))
     route_ranks = getattr(top, "route_ranks", ())
     has_fallback = any(
         name == "fallback"
@@ -175,6 +181,7 @@ def assess(candidates: Any, state: Any) -> ConfidenceSignals:
 
     return ConfidenceSignals(
         margin=margin,
+        margin_ratio=margin_ratio,
         pool_size=len(items),
         route_agreement=len(route_ranks),
         constraint_coverage=coverage,
@@ -228,6 +235,11 @@ def depth_mode() -> str:
     return value if value in {"turn", "confidence", "hybrid"} else "turn"
 
 
+def normalized_margin_enabled() -> bool:
+    """Use the scale-free margin ratio for the depth ladder."""
+    return _env_bool("TECHJAM_DEPTH_NORMALIZED_MARGIN", True)
+
+
 def confidence_depth(signals: ConfidenceSignals, turn: int) -> int | None:
     """Cap the returned list by measured separability.
 
@@ -254,9 +266,17 @@ def confidence_depth(signals: ConfidenceSignals, turn: int) -> int | None:
         (_env_float("TECHJAM_DEPTH_MARGIN_WIDE", 0.60, 0.0, 100.0), 10),
         (_env_float("TECHJAM_DEPTH_MARGIN_MID", 0.20, 0.0, 100.0), 2),
     ]
+    if normalized_margin_enabled():
+        ladder = [
+            (_env_float("TECHJAM_DEPTH_RATIO_WIDE", 0.30, 0.0, 1.0), 10),
+            (_env_float("TECHJAM_DEPTH_RATIO_MID", 0.10, 0.0, 1.0), 2),
+        ]
+        observed = signals.margin_ratio
+    else:
+        observed = signals.margin
     depth = 1
     for threshold, allowed in ladder:
-        if signals.margin >= threshold:
+        if observed >= threshold:
             depth = allowed
             break
     # Never withhold forever: a miss costs the full 11-turn penalty against

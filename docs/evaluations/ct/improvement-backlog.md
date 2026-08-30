@@ -301,6 +301,41 @@ Pure all-or-nothing gating - return everything when confident, nothing when not
 outright, and when it does return it returns ten, banking whatever rank the
 target happens to hold.
 
+### Margin is normalized, and the floor turn is not arbitrary
+
+The depth ladder originally thresholded the **raw** score gap. That gap is in
+`RetrievalWeights` units - 0.60 meant roughly "half a confirmed-attribute match
+ahead of the runner-up" - so retuning the weights would have silently changed
+what the thresholds meant, on the feature now worth +0.054. It is now the gap
+as a fraction of the leading score, which is scale-free.
+
+Recalibrated on top-1 accuracy (70 sessions x 5 turns):
+
+| margin ratio | turns | leader is the target |
+| --- | --- | --- |
+| >= 0.30 | 48 | 97.9% |
+| 0.20-0.30 | 39 | 92.3% |
+| 0.10-0.20 | 60 | 66.7% |
+| < 0.10 | 203 | 32.0% |
+
+Normalizing is also slightly better on both sets: **+0.001850 public**,
+**+0.003186 held-out**.
+
+The floor turn - when the list always widens to 10 - was swept rather than
+assumed:
+
+| floor | public | Hit@10 | MRR |
+| --- | --- | --- | --- |
+| 3 | -0.022439 | 0.990 | 0.790617 |
+| **5** | **best** | **0.990** | 0.890081 |
+| 6 | -0.006872 | 0.980 | 0.893506 |
+| 7 | -0.006401 | 0.980 | 0.899742 |
+
+Waiting longer does raise MRR, exactly as intuition suggests, but from turn 6
+onward two sessions run out of turns and miss outright. Hit@10 at 0.50 beats
+the MRR gain at 0.30. Turn 5 is the last turn that can still widen and land a
+hit inside the 10-turn budget.
+
 ## The holdout set was mis-specified, and it was hiding the biggest win
 
 `data/synthetic_set.jsonl` samples the catalogue uniformly. The public set does
