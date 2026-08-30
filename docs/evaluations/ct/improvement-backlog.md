@@ -234,6 +234,39 @@ The controller selects one of: **recommend now**, **recommend while asking**,
 **ask only**, **broaden retrieval**, **relax one constraint**. This is the
 explicit runtime strategy switching the rubric asks for.
 
+## The holdout set was mis-specified, and it was hiding the biggest win
+
+`data/synthetic_set.jsonl` samples the catalogue uniformly. The public set does
+not:
+
+| set | n | median rating count | mean |
+| --- | --- | --- | --- |
+| public targets | 200 | **6,846** | 16,179 |
+| synthetic (uniform) targets | 200 | **12.5** | 108 |
+| whole catalogue | 50,000 | 12 | 241 |
+
+Public targets are ~570x more reviewed than the catalogue median, because the
+benchmark anchors on the final *purchased* record and real purchases skew
+popular. A uniform holdout is therefore mis-specified on popularity, and
+returns false negatives for anything correlated with it.
+
+`tools/build_synthetic_set.py --match-popularity` builds a holdout matched
+quantile-for-quantile to the public rating-count distribution
+(`data/synthetic_pop.jsonl`, median 6,856). Raising `rating_count_coef` from
+its tuned 0.000335 then measures:
+
+| coef | public | uniform holdout | pop-matched holdout |
+| --- | --- | --- | --- |
+| 0.020 | +0.018335 | -0.003094 | +0.011603 |
+| 0.025 | +0.014341 | not run | +0.017478 |
+| **0.030** | **+0.014675** | not run | **+0.018603** |
+
+The sign flips purely on how the holdout samples popularity. Shipped at 0.030.
+
+**Use `synthetic_pop.jsonl` to validate anything popularity-correlated.** The
+uniform set stays useful for everything else - it caught the profile-expansion
+overfit correctly - but it is not a general-purpose proxy for the hidden set.
+
 ## Generic-metadata IDF cap — DONE
 
 Constraint values are now damped by how common their rarest token is, so

@@ -6,7 +6,7 @@ import os
 import re
 import sqlite3
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -743,6 +743,12 @@ class CatalogRetriever:
             return SearchResult.empty()
 
         weights = self.weights
+        # Quality signal, env-overridable so it can be swept without editing
+        # the tuned defaults. public_0144 is the motivating case: the target
+        # has 147 ratings at 4.3 while products above it have 2, 3 and 4.
+        quality = _env_float("TECHJAM_RATING_COUNT_COEF", -1.0, -1.0, 1.0)
+        if quality >= 0.0:
+            weights = replace(weights, rating_count_coef=quality)
         track = (
             resolve_track(state.intent_mode, _is_product_change(state, latest_message))
             if dual_track_enabled()

@@ -40,6 +40,8 @@ def main() -> None:
     ap.add_argument("--public", default="data/public_set.jsonl")
     ap.add_argument("--output", default="data/synthetic_set.jsonl")
     ap.add_argument("--count", type=int, default=200)
+    ap.add_argument("--match-popularity", action="store_true",
+                    help="sample targets to match the public set's rating-count distribution")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--prefix", default="synthetic")
     args = ap.parse_args()
@@ -48,6 +50,7 @@ def main() -> None:
     used = {str(s["ground_truth"]["parent_asin"]) for s in public}
     profiles = [s["user_profile"] for s in public]
 
+    public_targets: list[dict] = []
     products: dict[str, dict] = {}
     with Path(args.catalog).open(encoding="utf-8") as handle:
         for line in handle:
@@ -55,14 +58,60 @@ def main() -> None:
                 continue
             product = json.loads(line)
             parent_asin = str(product["parent_asin"])
-            if parent_asin not in used:
+            if parent_asin in used:
+                public_targets.append(product)
+            else:
                 products[parent_asin] = product
 
     rng = random.Random(args.seed)
     eligible = sorted(products)
     if len(eligible) < args.count:
         raise SystemExit(f"only {len(eligible)} unused products for {args.count} sessions")
-    chosen = rng.sample(eligible, args.count)
+
+    if args.match_popularity:
+        # A uniform draw from the catalogue is NOT how the public set was
+        # sampled. Public targets sit at a median of ~6,800 ratings against a
+        # catalogue median of 12, because the benchmark anchors on real
+        # purchases and real purchases skew popular. A holdout that ignores
+        # that is mis-specified on exactly the axis any popularity signal
+        # depends on, and will report false negatives for it.
+        #
+        # Match the public quantile-for-quantile: sort both by rating count and
+        # pick, for each public target, an unused product of comparable
+        # popularity.
+        public_counts = sorted(
+            float(t.get("rating_number") or 0.0) for t in public_targets
+        )
+        by_count = sorted(
+            eligible, key=lambda a: float(products[a].get("rating_number") or 0.0)
+        )
+        counts = [float(products[a].get("rating_number") or 0.0) for a in by_count]
+        chosen, taken = [], set()
+        import bisect
+
+        step = max(1, len(public_counts) // args.count)
+        for target_count in public_counts[::step][: args.count]:
+            index = bisect.bisect_left(counts, target_count)
+            # Walk outward for the nearest still-unused product.
+            for offset in range(len(by_count)):
+                for candidate_index in (index + offset, index - offset):
+                    if 0 <= candidate_index < len(by_count):
+                        asin = by_count[candidate_index]
+                        if asin not in taken:
+                            taken.add(asin)
+                            chosen.append(asin)
+                            break
+                else:
+                    continue
+                break
+        while len(chosen) < args.count:
+            asin = rng.choice(eligible)
+            if asin not in taken:
+                taken.add(asin)
+                chosen.append(asin)
+        rng.shuffle(chosen)
+    else:
+        chosen = rng.sample(eligible, args.count)
 
     scenarios = _allocate(args.count, SCENARIO_MIX)
     difficulties = _allocate(args.count, DIFFICULTY_MIX)
