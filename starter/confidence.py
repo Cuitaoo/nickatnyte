@@ -56,6 +56,21 @@ class ConfidenceSignals:
         """Too few candidates to rank at all - broadening is the only move."""
         return self.pool_size <= max_starved_pool()
 
+    @property
+    def is_overloaded(self) -> bool:
+        """Over-generality: a huge pool the ranking cannot separate.
+
+        Pool size alone says nothing - it sits at the retrieval cap for most
+        of a normal session. What marks genuine over-generality is a pool that
+        large *combined* with a leader that has not pulled away and few stated
+        constraints to narrow it.
+        """
+        return (
+            self.pool_size >= overload_pool()
+            and self.margin < min_margin()
+            and self.constraint_coverage <= 0.0
+        )
+
 
 def controller_enabled() -> bool:
     return _env_bool("TECHJAM_CONFIDENCE_CONTROLLER", False)
@@ -102,6 +117,24 @@ def max_starved_pool() -> int:
     return _env_int("TECHJAM_CONFIDENCE_STARVED_POOL", 3, 0, 50)
 
 
+def overload_pool() -> int:
+    """Pool size at which the result set stops being a shortlist.
+
+    Retrieval caps at CANDIDATE_LIMIT (500) and real sessions sit at 456-500
+    for the first few turns, so this fires on the genuinely unnarrowed ones.
+    """
+    return _env_int("TECHJAM_CONFIDENCE_OVERLOAD_POOL", 400, 1, 5000)
+
+
+def overload_cutoff_enabled() -> bool:
+    """Whether over-generality withholds recommendations, or is only recorded.
+
+    Acting on it breaks the controller's only-ever-release property and can
+    push MTTC up, so it is measured separately from detection.
+    """
+    return _env_bool("TECHJAM_CONFIDENCE_OVERLOAD_CUTOFF", False)
+
+
 def assess(candidates: Any, state: Any) -> ConfidenceSignals:
     """Measure separability of the current ranking."""
     items = list(candidates or ())
@@ -109,7 +142,11 @@ def assess(candidates: Any, state: Any) -> ConfidenceSignals:
         return ConfidenceSignals()
 
     top = items[0]
-    margin = float(top.score) - float(items[1].score) if len(items) > 1 else float(top.score)
+    # max minus second-max, not positions 0 and 1: the list is reordered by the
+    # cross-encoder while `.score` stays pre-rerank, so positional indexing
+    # compared two arbitrary scores and could return a negative "margin".
+    ordered = sorted((float(item.score) for item in items), reverse=True)
+    margin = ordered[0] - ordered[1] if len(ordered) > 1 else ordered[0]
     route_ranks = getattr(top, "route_ranks", ())
     has_fallback = any(
         name == "fallback"
@@ -148,6 +185,11 @@ def choose_strategy(
     """
     if signals.is_starved:
         return BROADEN_RETRIEVAL if ask_attribute else RECOMMEND_NOW
+
+    # Over-generality: the pool is unnarrowed and the ranking has not
+    # separated, so anything shown now is close to arbitrary.
+    if signals.is_overloaded and ask_attribute and overload_cutoff_enabled():
+        return ASK_ONLY
 
     if rule_would_defer:
         if signals.is_confident:

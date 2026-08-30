@@ -11,6 +11,7 @@ from starter.llm_agent import (
     PreferenceInterpreter,
 )
 from starter.orchestration import StrategyDecision, build_decision
+from starter.explain import explain_top, explanations_enabled
 from starter.confidence import (
     assess,
     choose_strategy,
@@ -215,6 +216,14 @@ class Agent:
         if strategy is not None:
             decision = replace(decision, action=strategy)
         self._decisions[session_id] = decision
+        # Transparent explanation, generated from recorded match evidence only.
+        # The response contract requires `message` to be a string and nothing
+        # parses its content, so this is where a shopper-facing reason belongs.
+        if explanations_enabled() and identifiers:
+            message = explain_top(
+                identifiers, search_result.candidates, state, message
+            )
+
         asked_attributes = list(state.asked_attributes)
         if ask_attribute and ask_attribute not in asked_attributes:
             asked_attributes.append(ask_attribute)

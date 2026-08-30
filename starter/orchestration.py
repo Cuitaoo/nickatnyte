@@ -124,15 +124,20 @@ def route_summary(candidates: Any) -> tuple[tuple[str, ...], bool]:
 
 
 def top_margin(candidates: Any) -> float:
-    """Score gap between the top two candidates.
+    """Gap between the best and second-best retrieval score.
 
-    A small margin means the ranking cannot separate its own best guesses,
-    which is the signal a confidence controller would act on.
+    Taken as max minus second-max rather than positions 0 and 1, because the
+    list is reordered by the cross-encoder and the audience guardrail while
+    `.score` still holds the pre-rerank lexical score. Indexing positionally
+    therefore compared two arbitrary scores and could come out negative.
+
+    This measures how separated the leading candidate is on lexical evidence,
+    which is the honest reading now that the final order is the reranker's.
     """
-    items = list(candidates or ())
-    if len(items) < 2:
+    scores = sorted((float(item.score) for item in (candidates or ())), reverse=True)
+    if len(scores) < 2:
         return 0.0
-    return float(items[0].score) - float(items[1].score)
+    return scores[0] - scores[1]
 
 
 def build_decision(
