@@ -14,6 +14,14 @@ from starter.audience import apply_audience_guardrail
 from starter.cross_encoder_reranker import CrossEncoderReranker
 from starter.state import ShoppingState
 from starter.synonyms import expand_terms
+from starter.tracks import (
+    apply_track,
+    diversity_enabled,
+    browsing_track_enabled,
+    dual_track_enabled,
+    resolve_track,
+    select_diverse_recommendations,
+)
 from starter.vector_index import (
     VectorCatalogIndex,
     category_query_embedding_text,
@@ -513,14 +521,6 @@ def _profile_terms(state: ShoppingState) -> list[str]:
     return lexical_terms(values, limit=16)
 
 
-def select_diverse_recommendations(
-    candidates: tuple[RankedCandidate, ...], top_k: int
-) -> tuple[str, ...]:
-    if top_k <= 0 or not candidates:
-        return ()
-    return tuple(item.product_id for item in candidates[:top_k])
-
-
 class CatalogRetriever:
     def __init__(
         self,
@@ -711,6 +711,13 @@ class CatalogRetriever:
             return SearchResult.empty()
 
         weights = self.weights
+        track = (
+            resolve_track(state.intent_mode, _is_override(latest_message))
+            if dual_track_enabled()
+            else None
+        )
+        if track is not None:
+            weights = apply_track(weights, track)
         routes = _route_specs(state, latest_message, weights)
         if not routes:
             return self._fallback_result(top_k)
@@ -931,7 +938,12 @@ class CatalogRetriever:
                 if product_id in candidate_by_id
             )
         return SearchResult(
-            recommendations=select_diverse_recommendations(candidates, top_k),
+            recommendations=select_diverse_recommendations(
+                candidates,
+                top_k,
+                self.metadata,
+                track.category_cap if track is not None and diversity_enabled() else 0,
+            ),
             candidates=candidates,
             diagnostics=self._diagnostics(candidates),
         )
