@@ -945,21 +945,27 @@ class CatalogRetriever:
             )
             for product_id in sorted(scores, key=lambda item: (-scores[item], item))
         )
-        # Staged hard filtering: a buying shopper's volunteered requirement
-        # removes products rather than nudging them. Ahead of the cross-encoder
-        # so the reranker spends its budget on candidates that qualify.
         self.last_relaxed_constraints: tuple[str, ...] = ()
-        if staged_filter_enabled() and state.intent_mode == "buying":
+
+        def _apply_staged_filter(pool: tuple) -> tuple:
+            if not (staged_filter_enabled() and state.intent_mode == "buying"):
+                return pool
             filtered, relaxed = staged_filter(
-                candidates,
+                pool,
                 classify_constraints(state),
                 self.metadata,
                 self._preference_matches,
                 _has_attribute_metadata,
             )
             self.last_relaxed_constraints = relaxed
-            if filtered:
-                candidates = filtered
+            return filtered or pool
+
+        # Placement matters: ahead of the cross-encoder the reranker sees a
+        # different candidate distribution than the one its weights were tuned
+        # on; behind it, filtering only removes violators from an ordering the
+        # reranker produced normally.
+        if not _env_bool("TECHJAM_STAGED_FILTER_AFTER_RERANK", True):
+            candidates = _apply_staged_filter(candidates)
 
         if self.cross_encoder_reranker is not None:
             ranked_ids = [candidate.product_id for candidate in candidates]
@@ -976,6 +982,8 @@ class CatalogRetriever:
                 for product_id in reranked_ids
                 if product_id in candidate_by_id
             )
+        if _env_bool("TECHJAM_STAGED_FILTER_AFTER_RERANK", True):
+            candidates = _apply_staged_filter(candidates)
         if self.audience_guardrail:
             candidate_by_id = {candidate.product_id: candidate for candidate in candidates}
             guarded_ids = apply_audience_guardrail(

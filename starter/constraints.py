@@ -83,6 +83,23 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, parsed))
 
 
+def min_filter_confidence() -> float:
+    """Reliability a constraint needs before it is allowed to *remove* products.
+
+    Relaxation triggers on pool size, so a sloppy constraint that still leaves
+    hundreds of products standing is never surrendered even when it wrongly cut
+    the target. Free-text attributes - style, use_case, feature, other - are
+    substring matches against product prose and are exactly the ones that
+    misfire, so they stay as boosts and never filter. Above the threshold sit
+    the precisely checkable ones: category, budget, brand, material, colour.
+    """
+    try:
+        parsed = float(os.getenv("TECHJAM_STAGED_FILTER_MIN_CONFIDENCE", "0.75"))
+    except ValueError:
+        parsed = 0.75
+    return max(0.0, min(1.0, parsed))
+
+
 def min_pool() -> int:
     """Floor below which the filter relaxes rather than narrows further.
 
@@ -153,7 +170,8 @@ def staged_filter(
     single constraint cannot leave `floor` candidates standing, the unfiltered
     pool is returned rather than a starved one.
     """
-    hard = [c for c in constraints if c.is_hard]
+    threshold = min_filter_confidence()
+    hard = [c for c in constraints if c.is_hard and c.confidence >= threshold]
     if not candidates or not hard:
         return candidates, ()
 

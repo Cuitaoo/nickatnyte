@@ -62,6 +62,41 @@ aggregate profile as a weak signal, exact identifier matching.
 > relaxation - is a different mechanism, and is the one that could actually
 > move buying MRR without shedding targets. Retry there, not on the weights.
 
+> **Staged hard filtering built and measured. Off.** `starter/constraints.py`
+> types constraint strength from how evidence arrived - `unsolicited` and
+> `correction` are hard, `clarification` is soft - and filters the pool to
+> products satisfying every hard constraint, relaxing the least reliable one
+> whenever the survivors fall below a floor.
+>
+> The typing works: **88% of buying sessions yield a hard constraint** after
+> turn 1 (almost always `material`). The filtering does not pay.
+>
+> | variant | public | buying MRR |
+> | --- | --- | --- |
+> | off | 0.886722 | 0.798259 |
+> | filter before cross-encoder | -0.001398 | 0.785779 |
+> | filter after cross-encoder | -0.001298 | 0.785779 |
+> | reliable constraints only (>=0.75) | -0.001198 | 0.785779 |
+>
+> All three are identical on MRR, and the session-level diff explains why:
+> **only 7 of 200 sessions change at all.** Four improve - the target is found
+> a turn earlier at the same rank, which is the intended benefit. Three worsen,
+> and one dominates: `public_0132` goes from rank 1 on turn 5 to rank 5 on turn
+> 4, a reciprocal-rank swing of -0.8 that is by itself -0.004 of the -0.005 MRR
+> total.
+>
+> Two conclusions. First, hard filtering is **largely redundant with
+> `confirmed_attribute_boost`**: the boost has already lifted matching products
+> to the top, so removing non-matchers takes out products that were ranked
+> below the target anyway. Second, `public_0132` is the depth schedule again -
+> surfacing the target *earlier but lower* is punished, because reciprocal rank
+> freezes at first appearance. Filtering that finds things sooner fights the
+> feature that profits from finding them later.
+>
+> The constraint typing is worth keeping regardless: it is what makes hard
+> versus soft visible in the strategy record and feeds the explanations.
+> Filtering on top of it is not.
+
 The highest-value item. Buying MRR is the weakest scenario. Buying should be a
 precision path, not the browsing pipeline with different constants:
 
