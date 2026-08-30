@@ -74,8 +74,19 @@ def _should_promote_other(state: ShoppingState) -> bool:
         return True
 
     threshold = _env_int("TECHJAM_OTHER_AFTER_NO_PREFERENCE", 2, 0, 10)
-    if threshold and state.consecutive_no_preference_turns >= threshold:
-        return True
+    if threshold:
+        # "cumulative" counts every attribute the shopper has ever declined;
+        # "consecutive" resets the moment they do answer. Cumulative is the
+        # default: it fires earlier and measured +0.001900 (browsing +0.008333,
+        # MTTC 3.615 -> 3.570) with Hit@10 unchanged. The reset in the
+        # consecutive counter discards evidence that the facets are exhausted
+        # just because one question happened to land.
+        if _env_bool("TECHJAM_OTHER_COUNTER_CUMULATIVE", True):
+            count = len(state.no_preference_attributes)
+        else:
+            count = state.consecutive_no_preference_turns
+        if count >= threshold:
+            return True
     return False
 
 

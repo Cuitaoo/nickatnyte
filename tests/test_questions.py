@@ -259,6 +259,8 @@ class ReAskPolicyTest(unittest.TestCase):
         self.assertEqual(attribute, "category")
 
     def test_other_is_asked_after_two_consecutive_no_preference_answers(self) -> None:
+        os.environ["TECHJAM_OTHER_COUNTER_CUMULATIVE"] = "false"
+        self.addCleanup(os.environ.pop, "TECHJAM_OTHER_COUNTER_CUMULATIVE", None)
         state = replace(
             ShoppingState.new("s", {}),
             category="shoes",
@@ -274,6 +276,8 @@ class ReAskPolicyTest(unittest.TestCase):
         self.assertEqual(attribute, "other")
 
     def test_one_no_preference_answer_does_not_force_other(self) -> None:
+        os.environ["TECHJAM_OTHER_COUNTER_CUMULATIVE"] = "false"
+        self.addCleanup(os.environ.pop, "TECHJAM_OTHER_COUNTER_CUMULATIVE", None)
         state = replace(
             ShoppingState.new("s", {}),
             category="shoes",
@@ -307,6 +311,7 @@ class PromoteOtherTest(unittest.TestCase):
         for name in (
             "TECHJAM_OTHER_AFTER_OVERRIDE",
             "TECHJAM_OTHER_AFTER_NO_PREFERENCE",
+            "TECHJAM_OTHER_COUNTER_CUMULATIVE",
         ):
             os.environ.pop(name, None)
 
@@ -329,7 +334,17 @@ class PromoteOtherTest(unittest.TestCase):
         _, attribute = choose_clarification(state, 3, broad_diagnostics())
         self.assertNotEqual(attribute, "other")
 
-    def test_no_preference_threshold_boundary(self):
+    def test_cumulative_counter_is_the_default(self):
+        below = self._state(no_preference_attributes=frozenset({"color"}))
+        _, attribute = choose_clarification(below, 3, broad_diagnostics())
+        self.assertNotEqual(attribute, "other")
+
+        at = self._state(no_preference_attributes=frozenset({"color", "size"}))
+        _, attribute = choose_clarification(at, 3, broad_diagnostics())
+        self.assertEqual(attribute, "other")
+
+    def test_consecutive_counter_when_selected(self):
+        os.environ["TECHJAM_OTHER_COUNTER_CUMULATIVE"] = "false"
         below = self._state(consecutive_no_preference_turns=1)
         _, attribute = choose_clarification(below, 3, broad_diagnostics())
         self.assertNotEqual(attribute, "other")
@@ -338,15 +353,21 @@ class PromoteOtherTest(unittest.TestCase):
         _, attribute = choose_clarification(at, 3, broad_diagnostics())
         self.assertEqual(attribute, "other")
 
+    def test_counters_are_independent(self):
+        """Cumulative must not be satisfied by the consecutive field alone."""
+        state = self._state(consecutive_no_preference_turns=5)
+        _, attribute = choose_clarification(state, 3, broad_diagnostics())
+        self.assertNotEqual(attribute, "other")
+
     def test_no_preference_threshold_is_configurable(self):
         os.environ["TECHJAM_OTHER_AFTER_NO_PREFERENCE"] = "3"
-        state = self._state(consecutive_no_preference_turns=2)
+        state = self._state(no_preference_attributes=frozenset({"color", "size"}))
         _, attribute = choose_clarification(state, 3, broad_diagnostics())
         self.assertNotEqual(attribute, "other")
 
     def test_zero_threshold_disables_the_counter_trigger(self):
         os.environ["TECHJAM_OTHER_AFTER_NO_PREFERENCE"] = "0"
-        state = self._state(consecutive_no_preference_turns=5)
+        state = self._state(no_preference_attributes=frozenset({"a", "b", "c"}))
         _, attribute = choose_clarification(state, 3, broad_diagnostics())
         self.assertNotEqual(attribute, "other")
 
