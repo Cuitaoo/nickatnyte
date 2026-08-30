@@ -213,3 +213,55 @@ def choose_strategy(
 
 def withholds_recommendations(strategy: str) -> bool:
     return strategy in {ASK_ONLY, BROADEN_RETRIEVAL}
+
+
+def depth_mode() -> str:
+    """How the returned-list cap is chosen.
+
+    "turn"       - the fixed depth schedule: cap by turn number.
+    "confidence" - return everything when the ranking has separated, nothing
+                   when it has not. The shopper gets a question instead.
+    "hybrid"     - cap by how separated the ranking actually is, so the list
+                   widens with confidence rather than with the clock.
+    """
+    value = os.getenv("TECHJAM_DEPTH_MODE", "turn").strip().lower()
+    return value if value in {"turn", "confidence", "hybrid"} else "turn"
+
+
+def confidence_depth(signals: ConfidenceSignals, turn: int) -> int | None:
+    """Cap the returned list by measured separability.
+
+    Reciprocal rank freezes at the target's first appearance, so returning a
+    long list before the ranking has separated banks a poor rank permanently.
+    The depth schedule approximates that with turn number; this uses the margin
+    directly.
+
+    A floor by turn keeps the session from stalling: if nothing ever separates,
+    the list still widens, because never returning at all scores a miss - worth
+    the full 11-turn penalty against Hit@10's 0.50 weight.
+    """
+    # Calibrated against how often the leader actually IS the target, measured
+    # over 70 sessions x 5 turns:
+    #
+    #   margin >= 0.60   96.5% top-1 correct   -> a long list costs nothing
+    #   margin >= 0.20   54.5%                 -> a coin flip, stay narrow
+    #   margin >= 0.05   30.6%                 -> narrower still
+    #   margin <  0.05   13.6%                 -> show one, or nothing
+    #
+    # The earlier ladder widened at 0.05, banking a wrong rank two times in
+    # three. Only the top band earns a wide list.
+    ladder = [
+        (_env_float("TECHJAM_DEPTH_MARGIN_WIDE", 0.60, 0.0, 100.0), 10),
+        (_env_float("TECHJAM_DEPTH_MARGIN_MID", 0.20, 0.0, 100.0), 2),
+    ]
+    depth = 1
+    for threshold, allowed in ladder:
+        if signals.margin >= threshold:
+            depth = allowed
+            break
+    # Never withhold forever: a miss costs the full 11-turn penalty against
+    # Hit@10's 0.50 weight, far more than a poorly ranked hit.
+    floor_turn = _env_int("TECHJAM_DEPTH_FLOOR_TURN", 5, 1, 10)
+    if turn >= floor_turn:
+        return 10
+    return depth

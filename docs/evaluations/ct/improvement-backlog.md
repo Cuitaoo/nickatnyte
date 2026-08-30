@@ -265,6 +265,42 @@ rather than its category-typical ones. That needs per-category term statistics
 (what is rare **for a parka**, not rare in the whole catalogue), which is real
 work and was not attempted.
 
+## Confidence-scaled depth replaces the turn schedule
+
+The depth schedule capped the returned list by turn number. That is a proxy for
+confidence, and a crude one: it assumes information accumulates on a clock.
+Capping by *measured* separability instead is the same idea done properly.
+
+The signal is strong. Over 70 sessions x 5 turns, how often the leading
+candidate really is the target, by margin band:
+
+| margin | turns | leader is the target |
+| --- | --- | --- |
+| >= 0.60 | 114 | **96.5%** |
+| >= 0.20 | 66 | 54.5% |
+| >= 0.05 | 111 | 30.6% |
+| < 0.05 | 59 | 13.6% |
+
+The first attempt widened the list at margin 0.05 and measured **-0.008700**,
+because at that band the leader is wrong two times in three and a wide list
+banks the wrong rank permanently. Recalibrated so only the 96.5% band earns a
+long list - 10 at >=0.60, 2 at >=0.20, 1 below, and always 10 from turn 5 so a
+session can never be starved into a miss:
+
+| set | turn schedule | confidence-scaled | delta |
+| --- | --- | --- | --- |
+| public | 0.900533 | **0.912024** | **+0.011491** |
+| holdout pop-matched | 0.864602 | **0.873457** | **+0.008855** |
+
+MRR carries it: 0.836 -> 0.890 public, 0.779 -> 0.838 held-out. MTTC worsens
+(3.26 -> 3.50) because narrow early turns delay some first hits, but MRR's 0.30
+weight beats Efficiency's 0.20 by more than enough.
+
+Pure all-or-nothing gating - return everything when confident, nothing when not
+- was also measured and is much worse (**-0.017005**): withholding costs MTTC
+outright, and when it does return it returns ten, banking whatever rank the
+target happens to hold.
+
 ## The holdout set was mis-specified, and it was hiding the biggest win
 
 `data/synthetic_set.jsonl` samples the catalogue uniformly. The public set does

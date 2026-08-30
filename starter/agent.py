@@ -14,6 +14,8 @@ from starter.orchestration import StrategyDecision, build_decision
 from starter.explain import explain_top, explanations_enabled
 from starter.confidence import (
     assess,
+    confidence_depth,
+    depth_mode,
     overload_steering_enabled,
     choose_strategy,
     controller_enabled,
@@ -255,11 +257,21 @@ class Agent:
             deferred = rule_would_defer
         if deferred:
             identifiers = []
-        depth = _recommendation_depth(int(turn), state.intent_mode)
+        mode = depth_mode()
+        if mode == "confidence":
+            # Return everything or nothing: withhold until the ranking has
+            # separated, and ask a question in the meantime.
+            depth = 10 if (signals.is_confident or int(turn) >= 5) else 0
+        elif mode == "hybrid":
+            depth = confidence_depth(signals, int(turn))
+        else:
+            depth = _recommendation_depth(int(turn), state.intent_mode)
         applied_depth = None
         if depth is not None and ask_attribute is not None:
             identifiers = identifiers[:depth]
             applied_depth = depth
+            if depth == 0:
+                deferred = True
 
         # Business guardrail final pass. Runs after the depth cap, so the
         # returned set is already frozen: this can only permute it.
