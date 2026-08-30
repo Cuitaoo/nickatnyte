@@ -186,6 +186,7 @@ class PreferenceToolInput(BaseModel):
 class PreferenceWorkflowState(MessagesState):
     shopping_state: ShoppingState
     latest_user_message: str
+    preference_patch: PreferencePatch | None
     prompt_tokens: int
     completion_tokens: int
     tool_applied: bool
@@ -271,6 +272,7 @@ def update_user_preferences(
     return Command(
         update={
             "shopping_state": updated,
+            "preference_patch": patch,
             "tool_applied": True,
             "messages": [
                 ToolMessage(
@@ -333,6 +335,7 @@ class Interpretation:
     state: ShoppingState
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    patch: PreferencePatch | None = None
 
 
 class PreferenceInterpreter:
@@ -403,6 +406,7 @@ class PreferenceInterpreter:
             "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES)],
             "shopping_state": state,
             "latest_user_message": message,
+            "preference_patch": None,
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "tool_applied": False,
@@ -433,6 +437,11 @@ class PreferenceInterpreter:
             state=updated,
             prompt_tokens=max(0, int(result.get("prompt_tokens", 0))),
             completion_tokens=max(0, int(result.get("completion_tokens", 0))),
+            patch=(
+                result.get("preference_patch")
+                if isinstance(result.get("preference_patch"), PreferencePatch)
+                else None
+            ),
         )
 
     def _call_model(self, state: PreferenceWorkflowState) -> dict:

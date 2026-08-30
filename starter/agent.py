@@ -24,7 +24,12 @@ from starter.profile import (
     profile_tags,
     reorder_by_profile,
 )
-from starter.preference_tool import apply_preference_patch, parse_preference_fallback
+from starter.preference_tool import (
+    apply_preference_patch,
+    canonicalize_model_patch,
+    parse_preference_fallback,
+    preference_parse_decision,
+)
 from starter.questions import choose_clarification
 from starter.reranker import CandidateReranker
 from starter.retrieval import CatalogRetriever, RetrievalWeights, _is_product_change
@@ -47,6 +52,7 @@ class Agent:
         openai_enabled: bool | None = None,
         weights: RetrievalWeights | None = None,
         reranker: object = _AUTO_RERANKER,
+        llm_gate_enabled: bool | None = None,
     ) -> None:
         self.catalog_path = Path(catalog_path)
         self.retriever = CatalogRetriever(self.catalog_path, weights=weights)
@@ -55,6 +61,7 @@ class Agent:
         self.defer_low_confidence_recommendations = _env_bool(
             "TECHJAM_DEFER_LOW_CONFIDENCE_RECOMMENDATIONS", True
         )
+        auto_interpreter = interpreter is _AUTO_INTERPRETER
         if interpreter is not _AUTO_INTERPRETER:
             self.interpreter = interpreter
         elif openai_enabled is False:
@@ -67,6 +74,13 @@ class Agent:
             self.reranker = None
         else:
             self.reranker = CandidateReranker.from_environment()
+        self.llm_gate_enabled = (
+            _env_bool("OPENAI_AMBIGUITY_GATE_ENABLED", True)
+            if llm_gate_enabled is None and auto_interpreter
+            else bool(llm_gate_enabled)
+            if llm_gate_enabled is not None
+            else False
+        )
 
     def close(self) -> None:
         self.retriever.close()
@@ -109,21 +123,34 @@ class Agent:
         previous_category = state.category
         prompt_tokens = 0
         completion_tokens = 0
+        parse_decision = preference_parse_decision(user_message, state)
 
-        if self.interpreter is not None:
+        if self.interpreter is not None and (
+            not self.llm_gate_enabled or parse_decision.use_llm
+        ):
             try:
                 interpretation = self.interpreter.interpret(user_message, state)
-                state, prompt_tokens, completion_tokens = self._validated_interpretation(
-                    session_id, interpretation
+                interpreted_state, prompt_tokens, completion_tokens = (
+                    self._validated_interpretation(session_id, interpretation)
                 )
+                if interpretation.patch is not None:
+                    canonical_patch = canonicalize_model_patch(
+                        user_message,
+                        state,
+                        interpretation.patch,
+                        parse_decision.patch,
+                    )
+                    state = apply_preference_patch(state, canonical_patch)
+                else:
+                    state = interpreted_state
             except InvalidInterpretation as exc:
                 prompt_tokens = exc.prompt_tokens
                 completion_tokens = exc.completion_tokens
-                state = self._fallback_state(user_message, state)
+                state = apply_preference_patch(state, parse_decision.patch)
             except Exception:
-                state = self._fallback_state(user_message, state)
+                state = apply_preference_patch(state, parse_decision.patch)
         else:
-            state = self._fallback_state(user_message, state)
+            state = apply_preference_patch(state, parse_decision.patch)
 
         requested_count = min(10, max(0, int(top_k)))
         try:

@@ -9,7 +9,9 @@ from starter.preference_tool import (
     PreferenceRemoval,
     PreferenceValue,
     apply_preference_patch,
+    canonicalize_model_patch,
     parse_preference_fallback,
+    preference_parse_decision,
 )
 from starter.state import PreferenceEvidence, ShoppingState
 
@@ -910,6 +912,136 @@ class PreferenceUpdateTest(unittest.TestCase):
         self.assertEqual(updated.category, "waterproof hiking boots")
         self.assertEqual(updated.preferences, {"feature": ("waterproof",)})
         self.assertEqual(updated.last_update_type, "product_change")
+
+
+class PreferenceRoutingTest(unittest.TestCase):
+    def test_direct_clarification_is_safe_without_model(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            previous_ask_attribute="feature",
+        )
+
+        decision = preference_parse_decision(
+            "For that, what matters is: Imported; Zipper closure.", state
+        )
+
+        self.assertFalse(decision.use_llm)
+        self.assertEqual(decision.safe_case, "direct_clarification")
+        self.assertEqual(
+            [(item.attribute, item.value) for item in decision.patch.set_preferences],
+            [("feature", "imported"), ("feature", "zipper closure")],
+        )
+
+    def test_no_preference_is_safe_without_model(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            previous_ask_attribute="color",
+        )
+
+        decision = preference_parse_decision(
+            "I don't have an additional preference for color.", state
+        )
+
+        self.assertFalse(decision.use_llm)
+        self.assertEqual(decision.safe_case, "no_preference")
+        self.assertEqual(decision.patch.no_preference_attributes, ["color"])
+
+    def test_ambiguous_override_escalates_to_model(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="watches",
+            preferences={"material": ("stainless steel band",)},
+        )
+
+        decision = preference_parse_decision(
+            "Actually, ignore my earlier preference. What I need is: Water Resistant.",
+            state,
+        )
+
+        self.assertTrue(decision.use_llm)
+        self.assertIn("correction_or_override", decision.reasons)
+        self.assertIn("unresolved_reference", decision.reasons)
+
+    def test_canonicalizer_keeps_fallback_fields_and_model_transition(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="watches wrist watches",
+            preferences={"material": ("stainless steel band",)},
+        )
+        message = (
+            "Actually, ignore my earlier preference. "
+            "What I need is: Water Resistant."
+        )
+        baseline = parse_preference_fallback(message, state)
+        model_patch = PreferencePatch(
+            intent_mode="buying",
+            update_type="replace_preferences",
+            correction_scope="latest_unsolicited",
+            category="water resistant",
+            set_preferences=[
+                PreferenceValue(attribute="other", value="Water Resistant")
+            ],
+            search_terms=["Water Resistant"],
+        )
+
+        canonical = canonicalize_model_patch(message, state, model_patch, baseline)
+
+        self.assertEqual(canonical.category, "unchanged")
+        self.assertEqual(canonical.update_type, "replace_preferences")
+        self.assertEqual(canonical.correction_scope, "latest_unsolicited")
+        self.assertEqual(
+            [(item.attribute, item.value) for item in canonical.set_preferences],
+            [("feature", "water resistant")],
+        )
+        self.assertEqual(canonical.search_terms, baseline.search_terms)
+
+    def test_canonicalizer_preserves_scope_when_explicit_correction_is_promoted(
+        self,
+    ) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="watches",
+            preferences={"material": ("stainless steel band",)},
+        )
+        message = (
+            "Actually, ignore my earlier preference. "
+            "What I need is: Water Resistant."
+        )
+        baseline = parse_preference_fallback(message, state)
+        model_patch = PreferencePatch(
+            intent_mode="buying",
+            update_type="merge",
+            set_preferences=[
+                PreferenceValue(attribute="feature", value="water resistant")
+            ],
+        )
+
+        canonical = canonicalize_model_patch(message, state, model_patch, baseline)
+
+        self.assertEqual(canonical.update_type, "replace_preferences")
+        self.assertEqual(canonical.correction_scope, "latest_unsolicited")
+
+    def test_direct_answer_field_is_not_reassigned_by_model(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            previous_ask_attribute="feature",
+        )
+        message = "For that, what matters is: Imported; Rubber sole."
+        baseline = parse_preference_fallback(message, state)
+        model_patch = PreferencePatch(
+            set_preferences=[
+                PreferenceValue(attribute="other", value="Imported"),
+                PreferenceValue(attribute="feature", value="Rubber sole"),
+            ]
+        )
+
+        canonical = canonicalize_model_patch(message, state, model_patch, baseline)
+
+        self.assertEqual(
+            [(item.attribute, item.value) for item in canonical.set_preferences],
+            [("feature", "imported"), ("feature", "rubber sole")],
+        )
+        self.assertEqual(canonical.search_terms, [])
 
 
 class CompoundEvidenceTest(unittest.TestCase):
