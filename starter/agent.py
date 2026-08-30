@@ -26,6 +26,7 @@ from starter.profile import (
     profile_tags,
     reorder_by_profile,
 )
+from starter.profile_memory import ProfileUpdate, distill_profile_updates
 from starter.preference_tool import (
     PreferenceParseDecision,
     apply_preference_patch,
@@ -63,6 +64,7 @@ class Agent:
         self._decisions: dict[str, StrategyDecision] = {}
         self._parse_decisions: dict[str, PreferenceParseDecision] = {}
         self._state_update_diagnostics: dict[str, dict[str, Any]] = {}
+        self._profile_updates: dict[str, tuple[ProfileUpdate, ...]] = {}
         self.defer_low_confidence_recommendations = _env_bool(
             "TECHJAM_DEFER_LOW_CONFIDENCE_RECOMMENDATIONS", True
         )
@@ -96,6 +98,7 @@ class Agent:
         self._sessions[session_id] = ShoppingState.new(session_id, user_profile)
         self._parse_decisions.pop(session_id, None)
         self._state_update_diagnostics.pop(session_id, None)
+        self._profile_updates.pop(session_id, None)
         reset_method = getattr(self.interpreter, "reset", None)
         if callable(reset_method):
             try:
@@ -123,6 +126,16 @@ class Agent:
         """Return how the latest state patch was selected and canonicalized."""
         return self._state_update_diagnostics.get(session_id)
 
+    def profile_updates(self, session_id: str) -> tuple[ProfileUpdate, ...]:
+        """Return persistence-ready deltas observed in this anonymous session.
+
+        The official evaluator has no stable user identity, so the Agent never
+        writes these itself. An authenticated application layer may persist them
+        under its own opaque user key.
+        """
+
+        return self._profile_updates.get(session_id, ())
+
     def session_state(self, session_id: str) -> ShoppingState:
         try:
             return self._sessions[session_id]
@@ -137,6 +150,7 @@ class Agent:
         top_k: int,
     ) -> dict:
         state = self.session_state(session_id)
+        state_before_update = state
         previous_category = state.category
         prompt_tokens = 0
         completion_tokens = 0
@@ -197,6 +211,16 @@ class Agent:
             )
             state = apply_preference_patch(state, parse_decision.patch)
         self._state_update_diagnostics[session_id] = update_diagnostic
+
+        observed_updates = distill_profile_updates(
+            str(user_message), state_before_update, state, int(turn)
+        )
+        if observed_updates:
+            existing_updates = list(self._profile_updates.get(session_id, ()))
+            for update in observed_updates:
+                if update not in existing_updates:
+                    existing_updates.append(update)
+            self._profile_updates[session_id] = tuple(existing_updates)
 
         requested_count = min(10, max(0, int(top_k)))
         try:

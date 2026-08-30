@@ -80,6 +80,24 @@ Available settings:
 
 If the key is missing, OpenAI is disabled, or a request fails, the agent automatically uses its deterministic preference parser.
 
+## Long-Term Profile Distillation
+
+The official evaluator is anonymous and provides no stable user ID, so the
+Agent never links benchmark sessions. It does expose score-neutral,
+persistence-ready profile deltas for an authenticated production wrapper:
+
+```python
+updates = agent.profile_updates(session_id)
+store.apply_updates(authenticated_user_key, session_id, updates)
+```
+
+Only explicit durable preferences backed by canonical state evidence are
+emitted. For auditability, the JSON demo stores only the bounded sentence that
+triggered the update, never full conversation history. Run the isolated demonstration
+with `python3 -m tools.demo_profile_memory`. See
+[`docs/profile-memory.md`](docs/profile-memory.md) for the update policy,
+privacy boundary, JSON format, and production integration.
+
 When the ambiguity gate escalates a message, the model performs one constrained
 state update. It classifies the message as a normal merge, a same-product
 preference replacement, or a true product change. A deterministic canonicalizer

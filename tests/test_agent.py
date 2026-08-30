@@ -15,6 +15,7 @@ from starter.preference_tool import (
     apply_preference_patch,
     parse_preference_fallback,
 )
+from starter.profile_memory import ProfileUpdate
 from starter.state import ALLOWED_PREFERENCE_ATTRIBUTES, ShoppingState
 
 
@@ -151,6 +152,90 @@ class AgentIntegrationTest(unittest.TestCase):
         self.assertEqual(agent.session_state("s").prompt_tokens, 23)
         self.assertEqual(agent.session_state("s").completion_tokens, 4)
         self.assertEqual(interpreter.calls, 2)
+
+    def test_explicit_long_term_preference_emits_score_neutral_profile_delta(self) -> None:
+        agent = Agent(self.catalog_path, interpreter=None)
+        self.addCleanup(agent.close)
+        agent.reset("s", {"summary": "", "preference_tags": []})
+
+        response = agent.respond(
+            "s",
+            "I'm looking for jeans, and I usually prefer cotton.",
+            1,
+            10,
+        )
+
+        updates = agent.profile_updates("s")
+        self.assertEqual(len(updates), 1)
+        self.assertEqual(updates[0].category_scope, "jeans")
+        self.assertEqual(updates[0].attribute, "material")
+        self.assertEqual(updates[0].value, "cotton")
+        self.assertEqual(
+            set(response),
+            {"message", "ask_attribute", "recommendations", "usage"},
+        )
+
+    def test_evaluator_style_preference_does_not_emit_profile_delta(self) -> None:
+        agent = Agent(self.catalog_path, interpreter=None)
+        self.addCleanup(agent.close)
+        agent.reset("s", {"summary": "", "preference_tags": []})
+        agent._sessions["s"] = replace(
+            agent.session_state("s"),
+            category="shirts",
+            previous_ask_attribute="material",
+        )
+
+        agent.respond("s", "For that, what matters is: cotton.", 2, 10)
+
+        self.assertEqual(agent.profile_updates("s"), ())
+
+    def test_reset_clears_observed_profile_deltas(self) -> None:
+        agent = Agent(self.catalog_path, interpreter=None)
+        self.addCleanup(agent.close)
+        agent.reset("s", {"summary": "", "preference_tags": []})
+        agent.respond(
+            "s",
+            "I'm looking for jeans, and I usually prefer cotton.",
+            1,
+            10,
+        )
+
+        agent.reset("s", {"summary": "", "preference_tags": []})
+
+        self.assertEqual(agent.profile_updates("s"), ())
+
+    def test_profile_observation_is_response_and_state_neutral(self) -> None:
+        baseline = Agent(self.catalog_path, interpreter=None)
+        observed = Agent(self.catalog_path, interpreter=None)
+        self.addCleanup(baseline.close)
+        self.addCleanup(observed.close)
+        profile = {"summary": "", "preference_tags": []}
+        baseline.reset("baseline", profile)
+        observed.reset("observed", profile)
+        update = ProfileUpdate(
+            category_scope="shirts",
+            attribute="material",
+            value="cotton",
+            confidence=0.90,
+            source_turn=1,
+        )
+
+        with patch("starter.agent.distill_profile_updates", return_value=()):
+            baseline_response = baseline.respond(
+                "baseline", "I'm looking for cotton shirts.", 1, 10
+            )
+        with patch(
+            "starter.agent.distill_profile_updates", return_value=(update,)
+        ):
+            observed_response = observed.respond(
+                "observed", "I'm looking for cotton shirts.", 1, 10
+            )
+
+        self.assertEqual(observed_response, baseline_response)
+        baseline_state = replace(baseline.session_state("baseline"), session_id="same")
+        observed_state = replace(observed.session_state("observed"), session_id="same")
+        self.assertEqual(observed_state, baseline_state)
+        self.assertEqual(observed.profile_updates("observed"), (update,))
 
     def test_ambiguity_gate_bypasses_model_for_direct_clarification(self) -> None:
         interpreter = QueueInterpreter([PreferencePatch()])
