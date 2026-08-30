@@ -42,6 +42,14 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off", ""}
 
 
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(os.getenv(name, str(default)))
+    except ValueError:
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     try:
         parsed = int(os.getenv(name, str(default)))
@@ -90,7 +98,23 @@ def _should_promote_other(state: ShoppingState) -> bool:
     return False
 
 
-def _question_score(attribute: str, item: AttributeDiagnostic) -> float:
+def _question_score(
+    attribute: str, item: AttributeDiagnostic, overloaded: bool = False
+) -> float:
+    if overloaded:
+        # Over-generality: the pool is unnarrowed and the ranking has not
+        # separated, so the job of the next question is to split the pool
+        # rather than to be easy to answer. `disagreement` is Gini impurity
+        # over the candidates' signatures for this attribute - it is exactly
+        # how much asking would divide them - so it dominates, and the priors
+        # (which encode how likely a shopper is to have an opinion) are halved.
+        return (
+            _env_float("TECHJAM_OVERLOAD_W_DISAGREE", 0.70, 0.0, 2.0) * item.disagreement
+            + 0.15 * item.coverage
+            + 0.15 * item.relevance
+            + _env_float("TECHJAM_OVERLOAD_W_PRIOR", 0.5, 0.0, 2.0)
+            * QUESTION_PRIORS[attribute]
+        )
     return (
         0.45 * item.disagreement
         + 0.25 * item.coverage
@@ -103,6 +127,7 @@ def choose_clarification(
     state: ShoppingState,
     turn: int,
     diagnostics: dict[str, AttributeDiagnostic],
+    overloaded: bool = False,
 ) -> tuple[str, str | None]:
     if turn >= 10:
         return RECOMMENDATION_MESSAGE, None
@@ -161,11 +186,16 @@ def choose_clarification(
             item.coverage < 0.35 or item.disagreement < 0.15
         ):
             continue
-        scored.append((_question_score(attribute, item), attribute))
+        scored.append((_question_score(attribute, item, overloaded), attribute))
 
     if scored:
         best_score, best_attribute = max(scored, key=lambda pair: (pair[0], pair[1]))
-        if best_score >= MIN_SPECIFIC_QUESTION_SCORE:
+        threshold = (
+            _env_float("TECHJAM_OVERLOAD_QUESTION_MIN", 0.18, 0.0, 2.0)
+            if overloaded
+            else MIN_SPECIFIC_QUESTION_SCORE
+        )
+        if best_score >= threshold:
             return QUESTION_TEMPLATES[best_attribute], best_attribute
 
     if "other" not in excluded:

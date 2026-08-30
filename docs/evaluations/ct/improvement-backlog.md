@@ -113,6 +113,36 @@ recommendations while asking a useful question.
 
 Browsing is already the strongest scenario, so **modify it conservatively**.
 
+## Over-generality: detected, but no useful action found
+
+The pillar asks for a retrieval cutoff on candidate-pool overload. Detection is
+implemented (`ConfidenceSignals.is_overloaded`: a pool at the retrieval cap
+*and* an unseparated leader *and* no satisfied constraints - pool size alone is
+true almost always, sitting at 456-500 against a 500 cap).
+
+Two ways of acting on it were measured, and both lose:
+
+| action | public | held-out |
+| --- | --- | --- |
+| withhold recommendations (`ASK_ONLY`) | -0.000200 | not run |
+| steer question, 0.70 disagreement / halved priors | -0.003938 | -0.001825 |
+| steer question, 0.55 disagreement / full priors | -0.000300 | not run |
+
+The second row is the informative one. Emphasising `disagreement` - Gini
+impurity over candidate signatures, i.e. raw pool-splitting power - and halving
+`QUESTION_PRIORS` costs 0.0039 and drops Hit@10. Restoring the priors recovers
+almost all of it. The priors encode *answerability*, and a question that splits
+the pool perfectly is worthless if the shopper answers "no preference": it
+burns a turn and narrows nothing.
+
+So the existing policy already performs question-value estimation, balancing
+split power against the chance of an answer, and it does so better than either
+re-weighting. Both variants ship off.
+
+**What is actually missing is narrowing, not asking.** An overloaded pool wants
+to be *filtered*, and filtering is the staged hard-constraint work in item 1.
+Over-generality is therefore blocked on the buying path, not on clarification.
+
 ## 3. Confidence and over-generality controller
 
 > **Implemented and enabled** (`starter/confidence.py`). Deferral was a rule

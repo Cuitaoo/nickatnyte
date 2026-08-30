@@ -14,6 +14,7 @@ from starter.orchestration import StrategyDecision, build_decision
 from starter.explain import explain_top, explanations_enabled
 from starter.confidence import (
     assess,
+    overload_steering_enabled,
     choose_strategy,
     controller_enabled,
     withholds_recommendations,
@@ -155,10 +156,15 @@ class Agent:
             if product_id in self.retriever.metadata
         ][:requested_count]
 
+        # Assessed before the question is chosen: over-generality should steer
+        # which question gets asked, not merely be recorded afterwards.
+        signals = assess(search_result.candidates, state)
+        steer = signals.is_overloaded and overload_steering_enabled()
         message, ask_attribute = choose_clarification(
             state,
             int(turn),
             search_result.diagnostics,
+            steer,
         )
         rule_would_defer = bool(
             self.defer_low_confidence_recommendations
@@ -172,7 +178,6 @@ class Agent:
         )
         strategy = None
         if controller_enabled():
-            signals = assess(search_result.candidates, state)
             strategy = choose_strategy(signals, ask_attribute, rule_would_defer)
             deferred = withholds_recommendations(strategy)
         else:

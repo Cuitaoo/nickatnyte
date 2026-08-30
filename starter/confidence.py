@@ -126,6 +126,17 @@ def overload_pool() -> int:
     return _env_int("TECHJAM_CONFIDENCE_OVERLOAD_POOL", 400, 1, 5000)
 
 
+def overload_steering_enabled() -> bool:
+    """Whether over-generality steers the next question.
+
+    This is the useful response to an unnarrowed pool: keep answering, but ask
+    the question that splits the candidates most. Unlike the cutoff it costs
+    nothing - it changes which attribute is asked, not whether results are
+    shown - so MTTC is unaffected.
+    """
+    return _env_bool("TECHJAM_OVERLOAD_QUESTION_STEERING", False)
+
+
 def overload_cutoff_enabled() -> bool:
     """Whether over-generality withholds recommendations, or is only recorded.
 
