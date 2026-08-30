@@ -919,7 +919,10 @@ class CatalogRetriever:
                 # Expanded tags against catalog vocabulary, scaled by intent and
                 # recorded by name so the personalization can be explained.
                 boost, tags = match_profile(
-                    product["corpus"], session_profile_tags, state.intent_mode
+                    product["corpus"],
+                    session_profile_tags,
+                    state.intent_mode,
+                    self._term_idf_scale,
                 )
                 if boost:
                     parts["profile"] += boost
@@ -1142,6 +1145,14 @@ class CatalogRetriever:
         if route_name == "vector_feature":
             return has_rare_terms or browsing or override or lexical_low_confidence
         return lexical_low_confidence
+
+    def _term_idf_scale(self, term: str) -> float:
+        """Rarity of a single term in [0, 1]; 1.0 means highly distinctive."""
+        total = len(self.metadata) or 1
+        frequency = self._document_frequency.get(term, 0)
+        if frequency <= 0:
+            return 1.0
+        return max(self.idf_min_scale, 1.0 - (frequency / total) * self.idf_damp)
 
     def _value_idf_scale(self, value: str) -> float:
         """How much ranking force a constraint value deserves.

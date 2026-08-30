@@ -234,6 +234,37 @@ The controller selects one of: **recommend now**, **recommend while asking**,
 **ask only**, **broaden retrieval**, **relax one constraint**. This is the
 explicit runtime strategy switching the rubric asks for.
 
+## III.1 personalization: three attempts, and why the signal is not there
+
+The profile expansion was retried with the IDF machinery that item 4 added, on
+the theory that damping tags matching half the catalogue would let the rare
+ones carry signal. It does not work, and the reason is structural rather than
+a tuning failure.
+
+| variant | public | holdout pop-matched |
+| --- | --- | --- |
+| raw semantic expansion | +0.000314 | -0.006014 (uniform holdout) |
+| IDF-weighted per matched term | -0.002519 | -0.000200 |
+| IDF-weighted, ceiling cut to a pure tie-break | -0.000475 | -0.001200 |
+
+IDF helps a value like "Imported" because the *value* is common while its
+alternatives are not. It cannot help here, because a profile tag names a
+**category of preference**, not a value. "comfort", "fit" and "material" are
+the three commonest tags in the data, and inside a result set of jackets every
+candidate is comfortable, fitted and made of some material. There is no rarer
+term to fall back on: the tag is uninformative about *which* jacket, however it
+is weighted.
+
+The IDF weighting is kept in `match_profile` regardless - it is the correct way
+to score the expansion if the feature is ever revived - but the feature ships
+off, and III.1 stays the one pillar this system does not fulfil.
+
+What would actually close it is a different signal, not a better weighting of
+this one: matching the profile against a product's *distinguishing* attributes
+rather than its category-typical ones. That needs per-category term statistics
+(what is rare **for a parka**, not rare in the whole catalogue), which is real
+work and was not attempted.
+
 ## The holdout set was mis-specified, and it was hiding the biggest win
 
 `data/synthetic_set.jsonl` samples the catalogue uniformly. The public set does

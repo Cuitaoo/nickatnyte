@@ -25,6 +25,7 @@ preference always outranks an inferred one.
 from __future__ import annotations
 
 import os
+from typing import Callable
 
 # The public and synthetic sets draw from a closed tag vocabulary. These
 # expansions are generic apparel vocabulary, not target-specific terms, so they
@@ -151,30 +152,45 @@ def max_boost(intent_mode: str) -> float:
 
 
 def match_profile(
-    corpus: str, tags: tuple[str, ...], intent_mode: str = "unknown"
+    corpus: str,
+    tags: tuple[str, ...],
+    intent_mode: str = "unknown",
+    idf_scale: "Callable[[str], float] | None" = None,
 ) -> tuple[float, tuple[str, ...]]:
     """Score a product against the profile and name the tags that matched.
 
     Returns the bounded boost and the matching tag names. The names are the
     point: personalization that cannot be explained should not be applied.
+
+    `idf_scale` maps a term to how rare it is, in [0, 1]. Without it every tag
+    counts the same, which is why the first version of this failed: "comfort"
+    matches 51.9% of the catalogue and "material" 60.8%, so the commonest tags
+    - also the commonest in the data - acted as a near-uniform boost that added
+    noise rather than ranking. With it, a tag earns its weight from the rarest
+    expansion term it actually matched on, so "weather" matching "waterproof"
+    counts for far more than "comfort" matching "soft".
     """
     if not corpus or not tags:
         return 0.0, ()
 
     matched: list[str] = []
+    total = 0.0
+    per_tag = _env_float("TECHJAM_PROFILE_PER_TAG", BOOST_PER_TAG, 0.0, 1.0)
     for tag in tags:
         expansion = PROFILE_EXPANSIONS.get(tag)
         if not expansion:
             continue
-        if any(term in corpus for term in expansion):
-            matched.append(tag)
+        hits = [term for term in expansion if term in corpus]
+        if not hits:
+            continue
+        matched.append(tag)
+        # The rarest term that matched is the informative one.
+        weight = max((idf_scale(term) for term in hits), default=1.0) if idf_scale else 1.0
+        total += per_tag * weight
 
     if not matched:
         return 0.0, ()
-
-    per_tag = _env_float("TECHJAM_PROFILE_PER_TAG", BOOST_PER_TAG, 0.0, 1.0)
-    boost = min(max_boost(intent_mode), per_tag * len(matched))
-    return boost, tuple(matched)
+    return min(max_boost(intent_mode), total), tuple(matched)
 
 
 def profile_reorder_enabled() -> bool:
@@ -186,6 +202,7 @@ def reorder_by_profile(
     metadata: dict,
     tags: tuple[str, ...],
     intent_mode: str = "unknown",
+    idf_scale: "Callable[[str], float] | None" = None,
 ) -> tuple[list[str], tuple[str, ...]]:
     """Reorder an already-selected list without changing what is in it.
 
@@ -209,7 +226,7 @@ def reorder_by_profile(
     scored: list[tuple[float, int, str, tuple[str, ...]]] = []
     for index, product_id in enumerate(identifiers):
         corpus = str((metadata.get(product_id) or {}).get("corpus") or "")
-        boost, matched = match_profile(corpus, tags, intent_mode)
+        boost, matched = match_profile(corpus, tags, intent_mode, idf_scale)
         base = (REORDER_SLOTS - index) / REORDER_SLOTS
         gain = _env_float("TECHJAM_PROFILE_REORDER_GAIN", REORDER_GAIN, 0.0, 20.0)
         scored.append((base + boost * gain, index, product_id, matched))
