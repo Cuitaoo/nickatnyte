@@ -200,4 +200,27 @@ def choose_clarification(
 
     if "other" not in excluded:
         return QUESTION_TEMPLATES["other"], "other"
+
+    # Everything has been asked and declined. Going silent wastes the rest of
+    # the session: the shopper is still answering, and the evaluator's reply to
+    # a question-less turn is literally "ask me about one specific attribute".
+    # Re-ask the attribute that still separates the candidates most, preferring
+    # one the shopper has never actually been asked, since a "no preference"
+    # given early may simply have come too soon to be meaningful.
+    if _env_bool("TECHJAM_REASK_WHEN_EXHAUSTED", False) and diagnostics:
+        askable = [
+            (item.disagreement, attribute)
+            for attribute, item in diagnostics.items()
+            if attribute in QUESTION_PRIORS
+            and attribute != "category"
+            and attribute not in state.preferences
+            and item.disagreement > 0.0
+        ]
+        if askable:
+            never_asked = [
+                pair for pair in askable if pair[1] not in state.asked_attributes
+            ]
+            best = max(never_asked or askable, key=lambda pair: (pair[0], pair[1]))
+            return QUESTION_TEMPLATES[best[1]], best[1]
+
     return RECOMMENDATION_MESSAGE, None

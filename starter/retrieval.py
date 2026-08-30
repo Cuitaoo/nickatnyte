@@ -562,6 +562,12 @@ class CatalogRetriever:
         self.cross_encoder_reranker = CrossEncoderReranker.from_environment()
         # Final business guardrail: demote wrong-audience products after
         # semantic reranking. Soft by design, so a strong exact match wins.
+        # Damp constraint values that appear across most of the catalogue.
+        # "Imported" and "Zipper closure" are true of nearly everything and
+        # should not carry the ranking force of a distinctive term.
+        self.idf_weighting = _env_bool("TECHJAM_IDF_WEIGHTING", False)
+        self.idf_min_scale = _env_float("TECHJAM_IDF_MIN_SCALE", 0.35, 0.0, 1.0)
+        self.idf_damp = _env_float("TECHJAM_IDF_DAMP", 1.5, 0.0, 10.0)
         self.audience_guardrail = _env_bool("TECHJAM_AUDIENCE_GUARDRAIL", False)
         self.audience_penalty = _env_float("TECHJAM_AUDIENCE_PENALTY", 0.15, 0.0, 1.0)
         self.audience_top_n = _env_int("TECHJAM_AUDIENCE_TOP_N", 20, 1, 200)
@@ -894,7 +900,7 @@ class CatalogRetriever:
                             0.15
                             if override_message and value.lower() not in latest_lower
                             else 1.0
-                        )
+                        ) * self._value_idf_scale(value)
                         parts[f"preference:{attribute}"] += (
                             weights.confirmed_attribute_boost * preference_weight
                         )
@@ -1130,6 +1136,28 @@ class CatalogRetriever:
         if route_name == "vector_feature":
             return has_rare_terms or browsing or override or lexical_low_confidence
         return lexical_low_confidence
+
+    def _value_idf_scale(self, value: str) -> float:
+        """How much ranking force a constraint value deserves.
+
+        A phrase is only as discriminating as its rarest word: "100% Cotton"
+        earns its weight from "cotton", not from "100". Values whose rarest
+        token still appears across much of the catalogue are damped toward
+        `idf_min_scale`, never to zero - a common constraint is weak evidence,
+        not wrong evidence.
+        """
+        if not self.idf_weighting:
+            return 1.0
+        total = len(self.metadata) or 1
+        frequencies = [
+            self._document_frequency.get(term, 0)
+            for term in lexical_terms([value])
+        ]
+        frequencies = [f for f in frequencies if f > 0]
+        if not frequencies:
+            return 1.0
+        ratio = min(frequencies) / total
+        return max(self.idf_min_scale, 1.0 - ratio * self.idf_damp)
 
     @staticmethod
     def _preference_matches(

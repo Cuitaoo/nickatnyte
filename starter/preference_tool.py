@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+import os
+
 from starter.state import (
     ALLOWED_PREFERENCE_ATTRIBUTES,
     CorrectionScope,
@@ -189,6 +191,13 @@ def _evidence_source(
     if allow_clarification and state.previous_ask_attribute in attributes:
         return "clarification"
     return "unsolicited"
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off", ""}
 
 
 UpdateKind = Literal["ordinary", "preference_correction", "product_change"]
@@ -382,6 +391,26 @@ def apply_preference_patch(
         latest_recommendations = ()
     elif update_kind == "preference_correction":
         corrected_attributes = set(values_by_attribute)
+        # An override that restates something already known is reinforcement,
+        # not replacement. "Actually, what I need is: polyester" against a
+        # state that already holds material=polyester/spandex should not retire
+        # the evidence and drop "spandex" - the shopper confirmed us, they did
+        # not correct us. Only attributes whose new values genuinely differ are
+        # treated as corrections.
+        if _env_bool("TECHJAM_OVERRIDE_REINFORCES", False):
+            reinforced = {
+                attribute
+                for attribute, new_values in values_by_attribute.items()
+                if attribute in preferences
+                and set(new_values) & set(preferences[attribute])
+            }
+            if reinforced:
+                corrected_attributes -= reinforced
+                values_by_attribute = {
+                    attribute: values
+                    for attribute, values in values_by_attribute.items()
+                    if attribute not in reinforced
+                }
         evidence, retired = _retire_corrected(evidence, values_by_attribute)
         # Legacy reset patches did not identify the exact transition. Preserve
         # their historical recovery behavior, while explicit model transitions

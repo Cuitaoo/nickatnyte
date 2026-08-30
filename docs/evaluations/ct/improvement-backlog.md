@@ -234,6 +234,39 @@ The controller selects one of: **recommend now**, **recommend while asking**,
 **ask only**, **broaden retrieval**, **relax one constraint**. This is the
 explicit runtime strategy switching the rubric asks for.
 
+## Generic-metadata IDF cap — DONE
+
+Constraint values are now damped by how common their rarest token is, so
+"Imported" cannot carry the ranking force of a model number:
+
+```text
+Imported 0.541   Pull On closure 0.750   100% Cotton 0.707
+Zipper closure 0.875   Rubber sole 0.792   distinctive phrase / SKU ~1.000
+```
+
+| set | delta | Hit@10 | intent_override MRR |
+| --- | --- | --- | --- |
+| public | +0.000134 | 0.990 | +0.019630 |
+| held-out synthetic | **+0.003600** | **0.950 -> 0.955** | **+0.033333** |
+
+It generalises better than it scores on public, which is the audience-guardrail
+pattern and the signature of a real improvement rather than a fit. Enabled.
+
+Two fixes tried alongside it and rejected:
+
+- **Override as reinforcement.** When an override restates a value already
+  known ("what I need is: polyester" against `material=polyester/spandex`),
+  treat it as confirmation and keep the existing evidence. Measured -0.000150,
+  with intent_override MRR -0.016666. The erasure it avoids was doing useful
+  work: carrying the extra value forward adds noise rather than preserving
+  signal.
+- **Re-ask when questions are exhausted.** Measured exactly 0.000000. It fires,
+  but re-asking a declined attribute earns another "no preference" - the
+  shopper has no remaining constraint of that kind, so there is nothing to
+  extract. `public_0144` still misses.
+
+Both stay switchable as evidence and ship off.
+
 ## 4. Post-reranker business guardrails
 
 A small deterministic final pass after cross-encoder ordering:
