@@ -115,6 +115,34 @@ Browsing is already the strongest scenario, so **modify it conservatively**.
 
 ## 3. Confidence and over-generality controller
 
+> **Implemented and enabled** (`starter/confidence.py`). Deferral was a rule
+> about turn number, intent, and preference count that never looked at whether
+> the ranking was any good, so a session with a runaway leader was withheld for
+> the same three turns as one where the top ten were indistinguishable.
+>
+> The controller measures separability - top-1/top-2 margin, route agreement,
+> fallback presence, constraint coverage - and selects among recommend_now,
+> recommend_while_asking, ask_only, broaden_retrieval, relax_constraint. It is
+> constrained to only *release* a turn the rule would withhold, never the
+> reverse, so MTTC cannot worsen.
+>
+> | margin | public | held-out |
+> | --- | --- | --- |
+> | 0.05 | +0.000750 | **-0.002050** |
+> | **0.60** | **+0.000600** | **+0.000400** |
+>
+> At 0.60, MRR is *exactly* unchanged on both sets and only MTTC moves: the
+> threshold is high enough that a released turn's target was already at the top.
+> Lower thresholds release more turns, gain more MTTC, and pay for it in MRR -
+> which loses, because MRR carries 0.30 against Efficiency's 0.20.
+>
+> `broaden_retrieval` and `relax_constraint` are selected and recorded but not
+> yet actioned; both need a second retrieval pass. That is the remaining work
+> here, and it is the piece that would let a starved pool recover rather than
+> just be labelled.
+
+
+
 Current deferral uses turn count, intent, and preference count. Replace or
 augment with measurable confidence:
 

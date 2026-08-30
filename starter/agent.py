@@ -11,6 +11,12 @@ from starter.llm_agent import (
     PreferenceInterpreter,
 )
 from starter.orchestration import StrategyDecision, build_decision
+from starter.confidence import (
+    assess,
+    choose_strategy,
+    controller_enabled,
+    withholds_recommendations,
+)
 from starter.profile import (
     profile_reorder_enabled,
     profile_tags,
@@ -153,7 +159,7 @@ class Agent:
             int(turn),
             search_result.diagnostics,
         )
-        deferred = bool(
+        rule_would_defer = bool(
             self.defer_low_confidence_recommendations
             and _should_defer_recommendations(
                 state,
@@ -163,6 +169,13 @@ class Agent:
                 previous_category,
             )
         )
+        strategy = None
+        if controller_enabled():
+            signals = assess(search_result.candidates, state)
+            strategy = choose_strategy(signals, ask_attribute, rule_would_defer)
+            deferred = withholds_recommendations(strategy)
+        else:
+            deferred = rule_would_defer
         if deferred:
             identifiers = []
         depth = _recommendation_depth(int(turn), state.intent_mode)
@@ -199,6 +212,8 @@ class Agent:
         )
         if reordered_tags:
             decision = replace(decision, profile_tags_matched=reordered_tags)
+        if strategy is not None:
+            decision = replace(decision, action=strategy)
         self._decisions[session_id] = decision
         asked_attributes = list(state.asked_attributes)
         if ask_attribute and ask_attribute not in asked_attributes:
