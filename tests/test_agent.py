@@ -172,6 +172,10 @@ class AgentIntegrationTest(unittest.TestCase):
         )
 
         self.assertEqual(interpreter.calls, 0)
+        self.assertFalse(agent.last_parse_decision("s").use_llm)
+        self.assertEqual(
+            agent.last_parse_decision("s").safe_case, "direct_clarification"
+        )
         self.assertEqual(agent.session_state("s").preferences["material"], ("leather",))
         self.assertEqual(response["usage"], {"prompt_tokens": 0, "completion_tokens": 0})
 
@@ -216,6 +220,10 @@ class AgentIntegrationTest(unittest.TestCase):
         updated = agent.session_state("s")
 
         self.assertEqual(interpreter.calls, 1)
+        self.assertTrue(agent.last_parse_decision("s").use_llm)
+        self.assertIn(
+            "correction_or_override", agent.last_parse_decision("s").reasons
+        )
         self.assertEqual(updated.category, "shoes")
         self.assertEqual(updated.preferences, {"feature": ("water resistant",)})
         self.assertEqual(updated.last_update_type, "replace_preferences")

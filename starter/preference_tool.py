@@ -814,9 +814,26 @@ def preference_parse_decision(
     no_preference = bool(patch.no_preference_attributes)
     exact_identifier = bool(EXACT_IDENTIFIER_RE.search(message))
     no_state_change = bool(NO_STATE_CHANGE_RE.fullmatch(normalized))
+    browsing = bool(
+        re.search(r"\b(?:browsing|exploring|not\s+sure|just\s+looking)\b", normalized)
+    )
+    buying = bool(
+        re.search(r"\b(?:looking\s+for|i\s+need|i\s+want|requirement|must\s+have)\b", normalized)
+    )
+    explicit_initial_request = bool(
+        state.turn == 0
+        and state.category is None
+        and not state.preferences
+        and patch.category != "unchanged"
+        and not _looks_like_attribute_constraint(patch.category)
+        and (browsing or buying)
+        and not correction
+    )
 
     safe_case: str | None = None
-    if no_preference and not correction:
+    if explicit_initial_request:
+        safe_case = "explicit_initial_request"
+    elif no_preference and not correction:
         safe_case = "no_preference"
     elif direct_answer and not correction:
         safe_case = "direct_clarification"
@@ -833,12 +850,6 @@ def preference_parse_decision(
     if UNRESOLVED_REFERENCE_RE.search(message):
         reasons.append("unresolved_reference")
         risk_score += 2
-    browsing = bool(
-        re.search(r"\b(?:browsing|exploring|not\s+sure|just\s+looking)\b", normalized)
-    )
-    buying = bool(
-        re.search(r"\b(?:looking\s+for|i\s+need|i\s+want|requirement|must\s+have)\b", normalized)
-    )
     if browsing and buying:
         reasons.append("mixed_buying_browsing_signals")
         risk_score += 2
@@ -883,12 +894,26 @@ def canonicalize_model_patch(
         and DIRECT_ANSWER_RE.fullmatch(normalize_value(message))
     )
 
+    explicit_initial_intent = bool(
+        state.turn == 0
+        and state.category is None
+        and baseline.intent_mode in {"buying", "browsing"}
+        and not CORRECTION_CUE_RE.search(message)
+    )
     intent_mode = (
-        model_patch.intent_mode
+        baseline.intent_mode
+        if explicit_initial_intent
+        else model_patch.intent_mode
         if model_patch.intent_mode != "unchanged"
         else baseline.intent_mode
     )
     update_type = model_patch.update_type
+    if (
+        state.category is None
+        and update_type == "product_change"
+        and baseline.update_type == "merge"
+    ):
+        update_type = "merge"
     used_baseline_transition = (
         update_type == "merge"
         and baseline.update_type != "merge"
@@ -904,7 +929,18 @@ def canonicalize_model_patch(
         else baseline.correction_scope
     )
 
+    model_preference_values = {
+        normalize_value(item.value)
+        for item in model_patch.set_preferences
+        if normalize_value(item.value)
+    }
     category = baseline.category
+    if (
+        update_type == "replace_preferences"
+        and model_patch.category == "unchanged"
+        and normalize_value(category) in model_preference_values
+    ):
+        category = "unchanged"
     if (
         model_patch.category != "unchanged"
         and (
@@ -917,6 +953,18 @@ def canonicalize_model_patch(
         category = "unchanged"
 
     preferences = list(baseline.set_preferences)
+    baseline_values = {
+        normalize_value(item.value)
+        for item in preferences
+        if normalize_value(item.value)
+    }
+    category_tokens = set(TOKEN_RE.findall(normalize_value(baseline.category)))
+    existing_value_attributes = {
+        normalize_value(value): normalize_value(attribute)
+        for attribute, values in state.preferences.items()
+        for value in values
+        if normalize_value(value)
+    }
     seen_preferences = {
         (normalize_value(item.attribute), normalize_value(item.value))
         for item in preferences
@@ -927,12 +975,40 @@ def canonicalize_model_patch(
             value = normalize_value(item.value)
             if not value or attribute not in ALLOWED_PREFERENCE_ATTRIBUTES:
                 continue
+            # Once a value has entered the deterministic ranking schema, keep
+            # its bucket stable when the shopper reasserts it. The model still
+            # controls transition scope, but cannot silently retune retrieval
+            # by moving identical evidence between weighted fields.
+            attribute = existing_value_attributes.get(value, attribute)
             if attribute == "category":
                 if category == "unchanged" and not _looks_like_attribute_constraint(value):
                     category = value
                 continue
             if FEATURE_METADATA_RE.search(value):
                 attribute = "feature"
+                if update_type == "merge" and not any(
+                    normalize_value(existing.attribute) == "feature"
+                    and normalize_value(existing.value) == value
+                    for existing in preferences
+                ):
+                    # Generic catalog metadata remains lexical evidence on an
+                    # ordinary merge. Promoting it to a confirmed preference
+                    # changes calibrated boost/filter behavior.
+                    continue
+            if any(
+                existing_value == value
+                or existing_value in value
+                or value in existing_value
+                for existing_value in baseline_values
+            ):
+                continue
+            value_tokens = set(TOKEN_RE.findall(value))
+            if (
+                update_type == "merge"
+                and value_tokens
+                and value_tokens.issubset(category_tokens)
+            ):
+                continue
             if any(
                 normalize_value(existing.attribute) == attribute
                 and (
@@ -948,12 +1024,18 @@ def canonicalize_model_patch(
                 seen_preferences.add(key)
 
     removals = list(baseline.remove_preferences)
+    accepted_preference_keys = {
+        (normalize_value(item.attribute), normalize_value(item.value))
+        for item in preferences
+    }
     seen_removals = {
         (normalize_value(item.attribute), normalize_value(item.value or ""))
         for item in removals
     }
     for item in model_patch.remove_preferences:
         key = (normalize_value(item.attribute), normalize_value(item.value or ""))
+        if key in accepted_preference_keys:
+            continue
         if key not in seen_removals:
             removals.append(item)
             seen_removals.add(key)

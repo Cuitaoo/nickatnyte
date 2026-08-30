@@ -6,7 +6,7 @@ import random
 import re
 import statistics
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 from starter.agent import Agent
@@ -219,10 +219,15 @@ def evaluate(
     catalog_ids: set[str],
     categories: dict[str, list[str]],
     products: dict[str, dict],
+    *,
+    trace_state_updates: bool = False,
 ) -> dict:
     sessions: list[dict] = []
     total_prompt_tokens = 0
     total_completion_tokens = 0
+    total_llm_routes = 0
+    routed_sessions: set[str] = set()
+    route_reasons: Counter[str] = Counter()
     for sample in samples:
         session_id = f"public_{uuid.uuid4().hex}"
         agent.reset(session_id, sample["user_profile"])
@@ -235,7 +240,14 @@ def evaluate(
         user_message = initial_message(effective_sample, coarse_category(categories.get(target, [])), disclosed)
         hit_turn: int | None = None
         best_rank: int | None = None
+        llm_routes: list[dict] = []
+        turn_traces: list[dict] = []
         for turn in range(1, MAX_TURNS + 1):
+            state_before = None
+            if trace_state_updates:
+                state_getter = getattr(agent, "session_state", None)
+                if callable(state_getter):
+                    state_before = state_getter(session_id).to_prompt_dict()
             try:
                 response = agent.respond(session_id, user_message, turn, TOP_K)
             except Exception:
@@ -243,12 +255,60 @@ def evaluate(
             if not isinstance(response, dict) or not isinstance(response.get("message"), str):
                 response = {"message": "", "ask_attribute": None, "recommendations": []}
             usage = response.get("usage")
+            turn_prompt_tokens = 0
+            turn_completion_tokens = 0
             if isinstance(usage, dict):
                 if isinstance(usage.get("prompt_tokens"), int) and usage["prompt_tokens"] >= 0:
-                    total_prompt_tokens += usage["prompt_tokens"]
+                    turn_prompt_tokens = usage["prompt_tokens"]
+                    total_prompt_tokens += turn_prompt_tokens
                 if isinstance(usage.get("completion_tokens"), int) and usage["completion_tokens"] >= 0:
-                    total_completion_tokens += usage["completion_tokens"]
+                    turn_completion_tokens = usage["completion_tokens"]
+                    total_completion_tokens += turn_completion_tokens
+            parse_decision_getter = getattr(agent, "last_parse_decision", None)
+            parse_decision = (
+                parse_decision_getter(session_id)
+                if callable(parse_decision_getter)
+                else None
+            )
+            if (
+                parse_decision is not None
+                and parse_decision.use_llm
+                and getattr(agent, "interpreter", None) is not None
+            ):
+                reasons = list(parse_decision.reasons)
+                llm_routes.append({
+                    "turn": turn,
+                    "message": user_message,
+                    "risk_score": parse_decision.risk_score,
+                    "reasons": reasons,
+                    "prompt_tokens": turn_prompt_tokens,
+                    "completion_tokens": turn_completion_tokens,
+                })
+                total_llm_routes += 1
+                routed_sessions.add(str(sample["sample_id"]))
+                route_reasons.update(reasons)
             ranked = normalize_recommendations(response.get("recommendations"), catalog_ids)
+            if trace_state_updates:
+                update_getter = getattr(agent, "last_state_update_diagnostic", None)
+                state_getter = getattr(agent, "session_state", None)
+                turn_traces.append({
+                    "turn": turn,
+                    "message": user_message,
+                    "ask_attribute": response.get("ask_attribute"),
+                    "target_rank": ranked.index(target) + 1 if target in ranked else None,
+                    "recommendations": ranked,
+                    "state_before": state_before,
+                    "state_after": (
+                        state_getter(session_id).to_prompt_dict()
+                        if callable(state_getter)
+                        else None
+                    ),
+                    "state_update": (
+                        update_getter(session_id)
+                        if callable(update_getter)
+                        else None
+                    ),
+                })
             if override_applied and target in ranked:
                 best_rank = ranked.index(target) + 1
                 hit_turn = turn
@@ -273,6 +333,9 @@ def evaluate(
             "first_hit_turn": hit_turn,
             "best_rank": best_rank,
             "reciprocal_rank": 0.0 if best_rank is None else 1.0 / best_rank,
+            "llm_route_count": len(llm_routes),
+            "llm_routes": llm_routes,
+            **({"turn_traces": turn_traces} if trace_state_updates else {}),
         })
 
     overall = metric_summary(sessions)
@@ -290,6 +353,11 @@ def evaluate(
             "completion_tokens": total_completion_tokens,
             "total_tokens": total_prompt_tokens + total_completion_tokens,
         },
+        "ambiguity_routing": {
+            "route_count": total_llm_routes,
+            "routed_session_count": len(routed_sessions),
+            "route_reasons": dict(route_reasons.most_common()),
+        },
         "scenario_metrics": {name: metric_summary(grouped[name]) for name in sorted(grouped)},
         "sessions": sessions,
     }
@@ -300,10 +368,26 @@ def main() -> None:
     parser.add_argument("--catalog", default="data/catalog.jsonl")
     parser.add_argument("--dataset", default="data/public_set.jsonl")
     parser.add_argument("--output", default="results.json")
+    parser.add_argument("--sample-id", action="append", default=[])
+    parser.add_argument("--trace-state-updates", action="store_true")
     args = parser.parse_args()
     samples = load_jsonl(args.dataset)
+    if args.sample_id:
+        requested_ids = set(args.sample_id)
+        samples = [sample for sample in samples if sample.get("sample_id") in requested_ids]
+        found_ids = {str(sample.get("sample_id")) for sample in samples}
+        missing_ids = sorted(requested_ids - found_ids)
+        if missing_ids:
+            parser.error("unknown sample IDs: " + ", ".join(missing_ids))
     catalog_ids, categories, products = catalog_index(args.catalog)
-    result = evaluate(Agent(args.catalog), samples, catalog_ids, categories, products)
+    result = evaluate(
+        Agent(args.catalog),
+        samples,
+        catalog_ids,
+        categories,
+        products,
+        trace_state_updates=args.trace_state_updates,
+    )
     Path(args.output).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({key: value for key, value in result.items() if key != "sessions"}, indent=2))
 

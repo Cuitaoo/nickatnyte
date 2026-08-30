@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 import json
 import tempfile
+from types import SimpleNamespace
 
 from evaluator.local_evaluator import catalog_index, evaluate, metric_summary, normalize_recommendations
 
@@ -17,6 +18,22 @@ class EchoTargetAgent:
         if "B" in user_message:
             asin = "B"
         return {"message": "ok", "ask_attribute": None, "recommendations": [{"parent_asin": asin}]}
+
+
+class RoutedEchoTargetAgent(EchoTargetAgent):
+    interpreter = object()
+
+    def last_parse_decision(self, session_id: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            use_llm=True,
+            risk_score=3,
+            reasons=("correction_or_override",),
+        )
+
+    def respond(self, session_id: str, user_message: str, turn: int, top_k: int) -> dict:
+        response = super().respond(session_id, user_message, turn, top_k)
+        response["usage"] = {"prompt_tokens": 12, "completion_tokens": 3}
+        return response
 
 
 class EvaluatorTest(unittest.TestCase):
@@ -79,6 +96,20 @@ class EvaluatorTest(unittest.TestCase):
             }]
             result = evaluate(EchoTargetAgent(), samples, catalog_ids, categories, products)
             self.assertEqual(result["hit_rate_at_10"], 1.0)
+            self.assertEqual(result["ambiguity_routing"]["route_count"], 0)
+
+            routed = evaluate(
+                RoutedEchoTargetAgent(), samples, catalog_ids, categories, products
+            )
+            self.assertEqual(routed["ambiguity_routing"], {
+                "route_count": 1,
+                "routed_session_count": 1,
+                "route_reasons": {"correction_or_override": 1},
+            })
+            self.assertEqual(routed["sessions"][0]["llm_route_count"], 1)
+            self.assertEqual(
+                routed["sessions"][0]["llm_routes"][0]["prompt_tokens"], 12
+            )
 
 
 if __name__ == "__main__":

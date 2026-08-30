@@ -25,6 +25,7 @@ from starter.profile import (
     reorder_by_profile,
 )
 from starter.preference_tool import (
+    PreferenceParseDecision,
     apply_preference_patch,
     canonicalize_model_patch,
     parse_preference_fallback,
@@ -58,6 +59,8 @@ class Agent:
         self.retriever = CatalogRetriever(self.catalog_path, weights=weights)
         self._sessions: dict[str, ShoppingState] = {}
         self._decisions: dict[str, StrategyDecision] = {}
+        self._parse_decisions: dict[str, PreferenceParseDecision] = {}
+        self._state_update_diagnostics: dict[str, dict[str, Any]] = {}
         self.defer_low_confidence_recommendations = _env_bool(
             "TECHJAM_DEFER_LOW_CONFIDENCE_RECOMMENDATIONS", True
         )
@@ -89,6 +92,8 @@ class Agent:
         if not session_id:
             raise ValueError("session_id must not be blank")
         self._sessions[session_id] = ShoppingState.new(session_id, user_profile)
+        self._parse_decisions.pop(session_id, None)
+        self._state_update_diagnostics.pop(session_id, None)
         reset_method = getattr(self.interpreter, "reset", None)
         if callable(reset_method):
             try:
@@ -105,6 +110,16 @@ class Agent:
         debugging, and explaining a turn.
         """
         return self._decisions.get(session_id)
+
+    def last_parse_decision(
+        self, session_id: str
+    ) -> PreferenceParseDecision | None:
+        """Return the latest deterministic LLM-routing decision for diagnostics."""
+        return self._parse_decisions.get(session_id)
+
+    def last_state_update_diagnostic(self, session_id: str) -> dict[str, Any] | None:
+        """Return how the latest state patch was selected and canonicalized."""
+        return self._state_update_diagnostics.get(session_id)
 
     def session_state(self, session_id: str) -> ShoppingState:
         try:
@@ -124,33 +139,62 @@ class Agent:
         prompt_tokens = 0
         completion_tokens = 0
         parse_decision = preference_parse_decision(user_message, state)
+        self._parse_decisions[session_id] = parse_decision
+        use_interpreter = bool(
+            self.interpreter is not None
+            and (not self.llm_gate_enabled or parse_decision.use_llm)
+        )
+        update_diagnostic: dict[str, Any] = {
+            "llm_requested": use_interpreter,
+            "deterministic_patch": parse_decision.patch.model_dump(mode="json"),
+            "model_patch": None,
+            "applied_patch": None,
+            "fallback_error": None,
+        }
 
-        if self.interpreter is not None and (
-            not self.llm_gate_enabled or parse_decision.use_llm
-        ):
+        if use_interpreter:
             try:
                 interpretation = self.interpreter.interpret(user_message, state)
                 interpreted_state, prompt_tokens, completion_tokens = (
                     self._validated_interpretation(session_id, interpretation)
                 )
                 if interpretation.patch is not None:
+                    update_diagnostic["model_patch"] = (
+                        interpretation.patch.model_dump(mode="json")
+                    )
                     canonical_patch = canonicalize_model_patch(
                         user_message,
                         state,
                         interpretation.patch,
                         parse_decision.patch,
                     )
+                    update_diagnostic["applied_patch"] = (
+                        canonical_patch.model_dump(mode="json")
+                    )
                     state = apply_preference_patch(state, canonical_patch)
                 else:
+                    update_diagnostic["applied_patch"] = "raw_interpreted_state"
                     state = interpreted_state
             except InvalidInterpretation as exc:
                 prompt_tokens = exc.prompt_tokens
                 completion_tokens = exc.completion_tokens
+                update_diagnostic["fallback_error"] = type(exc).__name__
+                update_diagnostic["applied_patch"] = (
+                    parse_decision.patch.model_dump(mode="json")
+                )
                 state = apply_preference_patch(state, parse_decision.patch)
-            except Exception:
+            except Exception as exc:
+                update_diagnostic["fallback_error"] = type(exc).__name__
+                update_diagnostic["applied_patch"] = (
+                    parse_decision.patch.model_dump(mode="json")
+                )
                 state = apply_preference_patch(state, parse_decision.patch)
         else:
+            update_diagnostic["applied_patch"] = (
+                parse_decision.patch.model_dump(mode="json")
+            )
             state = apply_preference_patch(state, parse_decision.patch)
+        self._state_update_diagnostics[session_id] = update_diagnostic
 
         requested_count = min(10, max(0, int(top_k)))
         try:

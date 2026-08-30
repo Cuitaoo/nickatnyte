@@ -915,6 +915,27 @@ class PreferenceUpdateTest(unittest.TestCase):
 
 
 class PreferenceRoutingTest(unittest.TestCase):
+    def test_explicit_initial_buying_request_is_safe_without_model(self) -> None:
+        decision = preference_parse_decision(
+            "I'm looking for Shorts Denim. A key requirement is: cotton.",
+            ShoppingState.new("s", {}),
+        )
+
+        self.assertFalse(decision.use_llm)
+        self.assertEqual(decision.safe_case, "explicit_initial_request")
+        self.assertEqual(decision.patch.intent_mode, "buying")
+        self.assertEqual(decision.patch.category, "shorts denim")
+
+    def test_explicit_initial_browsing_request_is_safe_without_model(self) -> None:
+        decision = preference_parse_decision(
+            "I'm looking for Men Jeans, but I'm still exploring.",
+            ShoppingState.new("s", {}),
+        )
+
+        self.assertFalse(decision.use_llm)
+        self.assertEqual(decision.safe_case, "explicit_initial_request")
+        self.assertEqual(decision.patch.intent_mode, "browsing")
+
     def test_direct_clarification_is_safe_without_model(self) -> None:
         state = replace(
             ShoppingState.new("s", {}),
@@ -1020,6 +1041,100 @@ class PreferenceRoutingTest(unittest.TestCase):
 
         self.assertEqual(canonical.update_type, "replace_preferences")
         self.assertEqual(canonical.correction_scope, "latest_unsolicited")
+
+    def test_canonicalizer_keeps_preference_override_out_of_category(self) -> None:
+        state = replace(ShoppingState.new("s", {}), category="anoraks", turn=2)
+        message = (
+            "Actually, ignore my earlier preference. What I need is: Faux Fur."
+        )
+        baseline = parse_preference_fallback(message, state)
+        model_patch = PreferencePatch(
+            update_type="replace_preferences",
+            correction_scope="latest_unsolicited",
+            category="unchanged",
+            set_preferences=[
+                PreferenceValue(attribute="feature", value="Faux Fur")
+            ],
+        )
+
+        canonical = canonicalize_model_patch(message, state, model_patch, baseline)
+
+        self.assertEqual(canonical.category, "unchanged")
+        self.assertEqual(
+            [(item.attribute, item.value) for item in canonical.set_preferences],
+            [("feature", "faux fur")],
+        )
+
+    def test_canonicalizer_does_not_duplicate_category_or_preference_values(self) -> None:
+        state = ShoppingState.new("s", {})
+        message = "I'm looking for Shorts Denim. A key requirement is: cotton."
+        baseline = parse_preference_fallback(message, state)
+        model_patch = PreferencePatch(
+            intent_mode="buying",
+            category="Shorts",
+            set_preferences=[
+                PreferenceValue(attribute="material", value="Denim"),
+                PreferenceValue(attribute="feature", value="cotton"),
+            ],
+        )
+
+        canonical = canonicalize_model_patch(message, state, model_patch, baseline)
+
+        self.assertEqual(
+            [(item.attribute, item.value) for item in canonical.set_preferences],
+            [("material", "cotton")],
+        )
+
+    def test_canonicalizer_keeps_generic_metadata_lexical_on_merge(self) -> None:
+        state = ShoppingState.new("s", {})
+        message = "I'm looking for Watches. A key requirement is: Imported."
+        baseline = parse_preference_fallback(message, state)
+        model_patch = PreferencePatch(
+            intent_mode="buying",
+            category="Watches",
+            set_preferences=[
+                PreferenceValue(attribute="feature", value="Imported")
+            ],
+        )
+
+        canonical = canonicalize_model_patch(message, state, model_patch, baseline)
+
+        self.assertEqual(canonical.set_preferences, [])
+        self.assertIn("imported", canonical.search_terms)
+
+    def test_canonicalizer_preserves_existing_bucket_for_reasserted_value(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="baseball caps",
+            preferences={
+                "feature": ("100% acrylic", "hook and loop closure")
+            },
+            turn=3,
+        )
+        message = (
+            "Actually, ignore my earlier preference. "
+            "What I need is: 100% Acrylic."
+        )
+        baseline = parse_preference_fallback(message, state)
+        model_patch = PreferencePatch(
+            update_type="replace_preferences",
+            correction_scope="latest_unsolicited",
+            category="unchanged",
+            set_preferences=[
+                PreferenceValue(attribute="material", value="100% Acrylic")
+            ],
+            remove_preferences=[
+                PreferenceRemoval(attribute="feature", value="100% acrylic")
+            ],
+        )
+
+        canonical = canonicalize_model_patch(message, state, model_patch, baseline)
+
+        self.assertEqual(
+            [(item.attribute, item.value) for item in canonical.set_preferences],
+            [("feature", "100% acrylic")],
+        )
+        self.assertEqual(canonical.remove_preferences, [])
 
     def test_direct_answer_field_is_not_reassigned_by_model(self) -> None:
         state = replace(
