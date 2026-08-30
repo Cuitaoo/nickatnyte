@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from starter.audience import apply_audience_guardrail
+from starter.constraints import (
+    classify_constraints,
+    staged_filter,
+    staged_filter_enabled,
+)
 from starter.cross_encoder_reranker import CrossEncoderReranker
 from starter.profile import match_profile, profile_tags, semantic_profile_enabled
 from starter.state import ShoppingState
@@ -491,6 +496,17 @@ ATTRIBUTE_RELEVANCE_PRIORS = {
 }
 
 
+def _has_attribute_metadata(attribute: str, product: dict[str, Any]) -> bool:
+    """Whether the product says anything at all about this attribute.
+
+    Used by the staged filter so that missing catalog metadata never excludes
+    a product - only a product that has the field and contradicts it is cut.
+    """
+    if attribute == "budget":
+        return product.get("price") is not None
+    return bool(_attribute_text(product, attribute).strip())
+
+
 def _attribute_text(product: dict[str, Any], attribute: str) -> str:
     if attribute == "category":
         return product["categories"]
@@ -929,6 +945,22 @@ class CatalogRetriever:
             )
             for product_id in sorted(scores, key=lambda item: (-scores[item], item))
         )
+        # Staged hard filtering: a buying shopper's volunteered requirement
+        # removes products rather than nudging them. Ahead of the cross-encoder
+        # so the reranker spends its budget on candidates that qualify.
+        self.last_relaxed_constraints: tuple[str, ...] = ()
+        if staged_filter_enabled() and state.intent_mode == "buying":
+            filtered, relaxed = staged_filter(
+                candidates,
+                classify_constraints(state),
+                self.metadata,
+                self._preference_matches,
+                _has_attribute_metadata,
+            )
+            self.last_relaxed_constraints = relaxed
+            if filtered:
+                candidates = filtered
+
         if self.cross_encoder_reranker is not None:
             ranked_ids = [candidate.product_id for candidate in candidates]
             reranked_ids = self.cross_encoder_reranker.rerank(
