@@ -72,15 +72,21 @@ Available settings:
 - `OPENAI_TEMPERATURE`: optional sampling temperature, clamped to 0–2; use `0`
   for deterministic state extraction when the endpoint supports it.
 - `OPENAI_ENABLED`: set to `false` to guarantee no API calls.
+- `OPENAI_AMBIGUITY_GATE_ENABLED`: when `true` (default), direct clarification,
+  no-preference, exact-identifier, and known no-state-change messages use the
+  deterministic parser; other messages may use the configured model.
 - `OPENAI_RERANK_ENABLED`: set to `true` to also rerank the top candidates
   with the model each turn (off by default posture; adds one call per turn).
 
 If the key is missing, OpenAI is disabled, or a request fails, the agent automatically uses its deterministic preference parser.
 
-The model performs one constrained state update per turn. It classifies the
-message as a normal merge, a same-product preference replacement, or a true
-product change. Deterministic code validates and applies that patch; retrieval,
-ranking, catalog IDs, and final response validation remain outside the model.
+When the ambiguity gate escalates a message, the model performs one constrained
+state update. It classifies the message as a normal merge, a same-product
+preference replacement, or a true product change. A deterministic canonicalizer
+then compiles the model's semantics into the same preference buckets and query
+terms used by the fallback parser. Deterministic code validates and applies that
+patch; retrieval, ranking, catalog IDs, and final response validation remain
+outside the model.
 For the current state-update test, model-generated query rewriting is disabled:
 category, preference values, removals, and search terms must be supported by a
 verbatim token span in the latest shopper message.

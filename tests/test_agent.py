@@ -77,6 +77,18 @@ class QueueInterpreter:
         )
 
 
+class PatchReportingInterpreter(QueueInterpreter):
+    def interpret(self, message: str, state) -> Interpretation:
+        self.calls += 1
+        patch = self.patches.pop(0)
+        return Interpretation(
+            apply_preference_patch(state, patch),
+            prompt_tokens=10 + self.calls,
+            completion_tokens=2,
+            patch=patch,
+        )
+
+
 class FailingInterpreter:
     def reset(self, session_id: str) -> None:
         return None
@@ -139,6 +151,83 @@ class AgentIntegrationTest(unittest.TestCase):
         self.assertEqual(agent.session_state("s").prompt_tokens, 23)
         self.assertEqual(agent.session_state("s").completion_tokens, 4)
         self.assertEqual(interpreter.calls, 2)
+
+    def test_ambiguity_gate_bypasses_model_for_direct_clarification(self) -> None:
+        interpreter = QueueInterpreter([PreferencePatch()])
+        agent = Agent(
+            self.catalog_path,
+            interpreter=interpreter,
+            llm_gate_enabled=True,
+        )
+        self.addCleanup(agent.close)
+        agent.reset("s", {"summary": "", "preference_tags": []})
+        agent._sessions["s"] = replace(
+            agent.session_state("s"),
+            category="shoes",
+            previous_ask_attribute="material",
+        )
+
+        response = agent.respond(
+            "s", "For that, what matters is: leather.", 2, 10
+        )
+
+        self.assertEqual(interpreter.calls, 0)
+        self.assertFalse(agent.last_parse_decision("s").use_llm)
+        self.assertEqual(
+            agent.last_parse_decision("s").safe_case, "direct_clarification"
+        )
+        self.assertEqual(agent.session_state("s").preferences["material"], ("leather",))
+        self.assertEqual(response["usage"], {"prompt_tokens": 0, "completion_tokens": 0})
+
+    def test_ambiguity_gate_uses_model_transition_with_canonical_fields(self) -> None:
+        interpreter = PatchReportingInterpreter(
+            [
+                PreferencePatch(
+                    intent_mode="buying",
+                    update_type="replace_preferences",
+                    correction_scope="latest_unsolicited",
+                    category="water resistant",
+                    set_preferences=[
+                        PreferenceValue(attribute="other", value="Water Resistant")
+                    ],
+                    search_terms=["Water Resistant"],
+                )
+            ]
+        )
+        agent = Agent(
+            self.catalog_path,
+            interpreter=interpreter,
+            llm_gate_enabled=True,
+        )
+        self.addCleanup(agent.close)
+        agent.reset("s", {"summary": "", "preference_tags": []})
+        current = apply_preference_patch(
+            replace(agent.session_state("s"), category="shoes"),
+            PreferencePatch(
+                set_preferences=[
+                    PreferenceValue(attribute="material", value="leather")
+                ]
+            ),
+        )
+        agent._sessions["s"] = replace(current, turn=1)
+
+        response = agent.respond(
+            "s",
+            "Actually, ignore my earlier preference. What I need is: Water Resistant.",
+            2,
+            10,
+        )
+        updated = agent.session_state("s")
+
+        self.assertEqual(interpreter.calls, 1)
+        self.assertTrue(agent.last_parse_decision("s").use_llm)
+        self.assertIn(
+            "correction_or_override", agent.last_parse_decision("s").reasons
+        )
+        self.assertEqual(updated.category, "shoes")
+        self.assertEqual(updated.preferences, {"feature": ("water resistant",)})
+        self.assertEqual(updated.last_update_type, "replace_preferences")
+        self.assertEqual(response["usage"], {"prompt_tokens": 11, "completion_tokens": 2})
 
     def test_api_failure_uses_fallback_and_returns_contract_shape(self) -> None:
         agent = Agent(self.catalog_path, interpreter=FailingInterpreter())

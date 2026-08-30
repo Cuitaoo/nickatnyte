@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -50,6 +50,12 @@ ATTRIBUTE_CONSTRAINT_RE = re.compile(
     r"(?:sole|outsole|upper|closure|lining|footbed|heel|strap|sleeve)$",
     re.IGNORECASE,
 )
+FEATURE_METADATA_RE = re.compile(
+    r"\b(?:imported|machine\s+wash|hand\s+wash|water[ -]?resistant|waterproof|"
+    r"(?:button|drawstring|hook(?:\s+and\s+loop)?|lace[ -]?up|pull[ -]?on|tie|zipper)"
+    r"\s+closure|(?:rubber|synthetic|leather|foam|eva)?\s*(?:sole|outsole))\b",
+    re.IGNORECASE,
+)
 DIRECT_ANSWER_RE = re.compile(
     r"^(?:for that,?\s*)?what matters is\s*:\s*(.+)$",
     re.IGNORECASE,
@@ -59,6 +65,27 @@ UNNAMED_EARLIER_PREFERENCE_RE = re.compile(
     r"\b(?:earlier|previous|last)\b.{0,30}"
     r"\b(?:preference|requirement|choice|request|one)\b"
     r"(?!\s+(?:for|about|on)\b)",
+    re.IGNORECASE,
+)
+EXACT_IDENTIFIER_RE = re.compile(
+    r"\b(?:item\s+model\s+number|model\s+(?:number|no)|style\s+(?:number|no)|"
+    r"part\s+(?:number|no)|mpn|sku)\s*[:#-]?\s*[a-z0-9][a-z0-9._/-]{2,}",
+    re.IGNORECASE,
+)
+CORRECTION_CUE_RE = re.compile(
+    r"\b(?:actually|instead|ignore|forget|replace|changed\s+my\s+mind|"
+    r"no\s+longer|not\s+.+\s+anymore)\b",
+    re.IGNORECASE,
+)
+UNRESOLVED_REFERENCE_RE = re.compile(
+    r"\b(?:that|that\s+one|(?:my\s+|the\s+)?earlier\s+(?:one|preference)|"
+    r"(?:my\s+|the\s+)?previous\s+(?:one|preference)|it|them|"
+    r"something\s+similar|for\s+her|for\s+him)\b",
+    re.IGNORECASE,
+)
+NO_STATE_CHANGE_RE = re.compile(
+    r"^(?:show\s+me\s+more|those\s+options\s+are\s+not\s+quite\s+right\s+yet[.,]?\s*"
+    r"ask\s+me\s+about\s+one\s+specific\s+attribute[.]?)$",
     re.IGNORECASE,
 )
 FALLBACK_STOPWORDS = frozenset(
@@ -119,6 +146,17 @@ class PreferencePatch(BaseModel):
     search_terms: list[str] = Field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class PreferenceParseDecision:
+    """Deterministic parse plus the evidence used to decide model escalation."""
+
+    patch: PreferencePatch
+    use_llm: bool
+    risk_score: int
+    reasons: tuple[str, ...] = ()
+    safe_case: str | None = None
+
+
 def normalize_value(value: object) -> str:
     return SPACE_RE.sub(" ", str(value)).strip(" \t\r\n,.;:-").lower()
 
@@ -139,6 +177,7 @@ def _looks_like_attribute_constraint(value: str) -> bool:
         normalized in COLORS
         or normalized in MATERIALS
         or normalized in USE_CASES
+        or bool(FEATURE_METADATA_RE.fullmatch(normalized))
         or bool(ATTRIBUTE_CONSTRAINT_RE.fullmatch(normalized))
     )
 
@@ -703,6 +742,20 @@ def parse_preference_fallback(
     for use_case in USE_CASES:
         if re.search(rf"\b{re.escape(use_case)}\b", lowered):
             values.append(PreferenceValue(attribute="use_case", value=use_case))
+    has_direct_answer = bool(
+        state.previous_ask_attribute in ALLOWED_PREFERENCE_ATTRIBUTES
+        and DIRECT_ANSWER_RE.fullmatch(lowered)
+    )
+    # Ordinary requests already retain these words in category/search terms.
+    # Promote them to typed features only for corrections, where the reducer
+    # needs an attribute bucket to scope the replacement safely.
+    if override and not has_direct_answer:
+        seen_features: set[str] = set()
+        for match in FEATURE_METADATA_RE.finditer(lowered):
+            feature = normalize_value(match.group(0))
+            if feature and feature not in seen_features:
+                values.append(PreferenceValue(attribute="feature", value=feature))
+                seen_features.add(feature)
 
     no_preference: list[str] = []
     no_preference_match = re.search(
@@ -767,4 +820,273 @@ def parse_preference_fallback(
         set_preferences=values,
         no_preference_attributes=no_preference,
         search_terms=search_terms[:24],
+    )
+
+
+def preference_parse_decision(
+    message: str, state: ShoppingState
+) -> PreferenceParseDecision:
+    """Route only well-understood, low-risk messages around the LLM.
+
+    This is deliberately an allowlist. Unknown language is escalated instead of
+    being declared safe merely because no ambiguity regex happened to match.
+    """
+
+    patch = parse_preference_fallback(message, state)
+    normalized = normalize_value(message)
+    correction = bool(CORRECTION_CUE_RE.search(message))
+    direct_answer = bool(
+        state.previous_ask_attribute
+        and DIRECT_ANSWER_RE.fullmatch(normalized)
+        and patch.set_preferences
+    )
+    no_preference = bool(patch.no_preference_attributes)
+    exact_identifier = bool(EXACT_IDENTIFIER_RE.search(message))
+    no_state_change = bool(NO_STATE_CHANGE_RE.fullmatch(normalized))
+    browsing = bool(
+        re.search(r"\b(?:browsing|exploring|not\s+sure|just\s+looking)\b", normalized)
+    )
+    buying = bool(
+        re.search(r"\b(?:looking\s+for|i\s+need|i\s+want|requirement|must\s+have)\b", normalized)
+    )
+    explicit_initial_request = bool(
+        state.turn == 0
+        and state.category is None
+        and not state.preferences
+        and patch.category != "unchanged"
+        and not _looks_like_attribute_constraint(patch.category)
+        and (browsing or buying)
+        and not correction
+    )
+
+    safe_case: str | None = None
+    if explicit_initial_request:
+        safe_case = "explicit_initial_request"
+    elif no_preference and not correction:
+        safe_case = "no_preference"
+    elif direct_answer and not correction:
+        safe_case = "direct_clarification"
+    elif exact_identifier and not correction:
+        safe_case = "exact_identifier"
+    elif no_state_change:
+        safe_case = "no_state_change"
+
+    reasons: list[str] = []
+    risk_score = 0
+    if correction:
+        reasons.append("correction_or_override")
+        risk_score += 3
+    if UNRESOLVED_REFERENCE_RE.search(message):
+        reasons.append("unresolved_reference")
+        risk_score += 2
+    if browsing and buying:
+        reasons.append("mixed_buying_browsing_signals")
+        risk_score += 2
+    if patch.category != "unchanged" and _looks_like_attribute_constraint(patch.category):
+        reasons.append("category_looks_like_attribute")
+        risk_score += 3
+    if len(patch.remove_preferences) + len(patch.no_preference_attributes) > 1:
+        reasons.append("multiple_destructive_updates")
+        risk_score += 2
+    if safe_case is not None:
+        risk_score = max(0, risk_score - 3)
+    elif not reasons:
+        reasons.append("outside_safe_parse_allowlist")
+        risk_score = 1
+
+    return PreferenceParseDecision(
+        patch=patch,
+        use_llm=safe_case is None,
+        risk_score=risk_score,
+        reasons=tuple(reasons),
+        safe_case=safe_case,
+    )
+
+
+def canonicalize_model_patch(
+    message: str,
+    state: ShoppingState,
+    model_patch: PreferencePatch,
+    deterministic_patch: PreferencePatch | None = None,
+) -> PreferencePatch:
+    """Compile model semantics into the fallback parser's ranking contract.
+
+    The model owns ambiguous transition semantics. Deterministic code owns the
+    preference buckets and query-term representation that retrieval weights see.
+    Model-extracted values are used only when the fallback did not already
+    represent the same evidence.
+    """
+
+    baseline = deterministic_patch or parse_preference_fallback(message, state)
+    direct_answer = bool(
+        state.previous_ask_attribute
+        and DIRECT_ANSWER_RE.fullmatch(normalize_value(message))
+    )
+
+    explicit_initial_intent = bool(
+        state.turn == 0
+        and state.category is None
+        and baseline.intent_mode in {"buying", "browsing"}
+        and not CORRECTION_CUE_RE.search(message)
+    )
+    intent_mode = (
+        baseline.intent_mode
+        if explicit_initial_intent
+        else model_patch.intent_mode
+        if model_patch.intent_mode != "unchanged"
+        else baseline.intent_mode
+    )
+    update_type = model_patch.update_type
+    if (
+        state.category is None
+        and update_type == "product_change"
+        and baseline.update_type == "merge"
+    ):
+        update_type = "merge"
+    used_baseline_transition = (
+        update_type == "merge"
+        and baseline.update_type != "merge"
+        and bool(CORRECTION_CUE_RE.search(message))
+    )
+    if used_baseline_transition:
+        update_type = baseline.update_type
+    correction_scope = (
+        baseline.correction_scope
+        if used_baseline_transition
+        else model_patch.correction_scope
+        if update_type == "replace_preferences"
+        else baseline.correction_scope
+    )
+
+    model_preference_values = {
+        normalize_value(item.value)
+        for item in model_patch.set_preferences
+        if normalize_value(item.value)
+    }
+    category = baseline.category
+    if (
+        update_type == "replace_preferences"
+        and model_patch.category == "unchanged"
+        and normalize_value(category) in model_preference_values
+    ):
+        category = "unchanged"
+    if (
+        model_patch.category != "unchanged"
+        and (
+            category == "unchanged"
+            or model_patch.update_type == "product_change"
+        )
+    ):
+        category = model_patch.category
+    if _looks_like_attribute_constraint(category):
+        category = "unchanged"
+
+    preferences = list(baseline.set_preferences)
+    baseline_values = {
+        normalize_value(item.value)
+        for item in preferences
+        if normalize_value(item.value)
+    }
+    category_tokens = set(TOKEN_RE.findall(normalize_value(baseline.category)))
+    existing_value_attributes = {
+        normalize_value(value): normalize_value(attribute)
+        for attribute, values in state.preferences.items()
+        for value in values
+        if normalize_value(value)
+    }
+    seen_preferences = {
+        (normalize_value(item.attribute), normalize_value(item.value))
+        for item in preferences
+    }
+    if not direct_answer:
+        for item in model_patch.set_preferences:
+            attribute = normalize_value(item.attribute)
+            value = normalize_value(item.value)
+            if not value or attribute not in ALLOWED_PREFERENCE_ATTRIBUTES:
+                continue
+            # Once a value has entered the deterministic ranking schema, keep
+            # its bucket stable when the shopper reasserts it. The model still
+            # controls transition scope, but cannot silently retune retrieval
+            # by moving identical evidence between weighted fields.
+            attribute = existing_value_attributes.get(value, attribute)
+            if attribute == "category":
+                if category == "unchanged" and not _looks_like_attribute_constraint(value):
+                    category = value
+                continue
+            if FEATURE_METADATA_RE.search(value):
+                attribute = "feature"
+                if update_type == "merge" and not any(
+                    normalize_value(existing.attribute) == "feature"
+                    and normalize_value(existing.value) == value
+                    for existing in preferences
+                ):
+                    # Generic catalog metadata remains lexical evidence on an
+                    # ordinary merge. Promoting it to a confirmed preference
+                    # changes calibrated boost/filter behavior.
+                    continue
+            if any(
+                existing_value == value
+                or existing_value in value
+                or value in existing_value
+                for existing_value in baseline_values
+            ):
+                continue
+            value_tokens = set(TOKEN_RE.findall(value))
+            if (
+                update_type == "merge"
+                and value_tokens
+                and value_tokens.issubset(category_tokens)
+            ):
+                continue
+            if any(
+                normalize_value(existing.attribute) == attribute
+                and (
+                    normalize_value(existing.value) in value
+                    or value in normalize_value(existing.value)
+                )
+                for existing in preferences
+            ):
+                continue
+            key = (attribute, value)
+            if key not in seen_preferences:
+                preferences.append(PreferenceValue(attribute=attribute, value=value))
+                seen_preferences.add(key)
+
+    removals = list(baseline.remove_preferences)
+    accepted_preference_keys = {
+        (normalize_value(item.attribute), normalize_value(item.value))
+        for item in preferences
+    }
+    seen_removals = {
+        (normalize_value(item.attribute), normalize_value(item.value or ""))
+        for item in removals
+    }
+    for item in model_patch.remove_preferences:
+        key = (normalize_value(item.attribute), normalize_value(item.value or ""))
+        if key in accepted_preference_keys:
+            continue
+        if key not in seen_removals:
+            removals.append(item)
+            seen_removals.add(key)
+
+    no_preference_attributes = list(
+        dict.fromkeys(
+            [
+                *baseline.no_preference_attributes,
+                *model_patch.no_preference_attributes,
+            ]
+        )
+    )
+
+    return PreferencePatch(
+        intent_mode=intent_mode,
+        update_type=update_type,
+        correction_scope=correction_scope,
+        category=category,
+        set_preferences=preferences,
+        remove_preferences=removals,
+        no_preference_attributes=no_preference_attributes,
+        # Query-field duplication remains deterministic so existing retrieval
+        # weights do not depend on model-specific output habits.
+        search_terms=list(baseline.search_terms),
     )
