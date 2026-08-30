@@ -8,8 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from starter.state import (
     ALLOWED_PREFERENCE_ATTRIBUTES,
+    CorrectionScope,
     PreferenceEvidence,
     ShoppingState,
+    StateUpdateType,
 )
 
 
@@ -48,6 +50,13 @@ ATTRIBUTE_CONSTRAINT_RE = re.compile(
 )
 DIRECT_ANSWER_RE = re.compile(
     r"^(?:for that,?\s*)?what matters is\s*:\s*(.+)$",
+    re.IGNORECASE,
+)
+UNNAMED_EARLIER_PREFERENCE_RE = re.compile(
+    r"\b(?:ignore|forget|drop|discard|replace)\b.{0,60}"
+    r"\b(?:earlier|previous|last)\b.{0,30}"
+    r"\b(?:preference|requirement|choice|request|one)\b"
+    r"(?!\s+(?:for|about|on)\b)",
     re.IGNORECASE,
 )
 FALLBACK_STOPWORDS = frozenset(
@@ -98,6 +107,8 @@ class PreferencePatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     intent_mode: Literal["buying", "browsing", "unknown", "unchanged"] = "unchanged"
+    update_type: StateUpdateType = "merge"
+    correction_scope: CorrectionScope = "corrected_attributes"
     category: str = "unchanged"
     set_preferences: list[PreferenceValue] = Field(default_factory=list)
     remove_preferences: list[PreferenceRemoval] = Field(default_factory=list)
@@ -108,6 +119,11 @@ class PreferencePatch(BaseModel):
 
 def normalize_value(value: object) -> str:
     return SPACE_RE.sub(" ", str(value)).strip(" \t\r\n,.;:-").lower()
+
+
+def references_unnamed_earlier_preference(message: str) -> bool:
+    """Return whether a correction refers to an old preference without naming it."""
+    return bool(UNNAMED_EARLIER_PREFERENCE_RE.search(message))
 
 
 def _append_unique(values: list[str], value: str) -> None:
@@ -184,14 +200,26 @@ def _classify_update(
     patch_category: str,
     values_by_attribute: dict[str, tuple[str, ...]],
 ) -> UpdateKind:
-    if not patch.reset_product_preferences:
-        return "ordinary"
     current_category = normalize_value(state.category) if state.category else ""
     keeps_category = (
         patch_category == "unchanged"
         or patch_category == current_category
         or _looks_like_attribute_constraint(patch_category)
     )
+    if patch.update_type == "replace_preferences":
+        # Prevent stale product constraints when the extracted category clearly
+        # changes even if the model chose the less destructive transition.
+        if state.category and not keeps_category:
+            return "product_change"
+        return "preference_correction"
+    requested_product_change = (
+        patch.update_type == "product_change" or patch.reset_product_preferences
+    )
+    if not requested_product_change:
+        return "ordinary"
+    # A model may overreact to words such as "actually" or "instead". Refuse a
+    # destructive reset when its output only changes an attribute within the
+    # current product search.
     if state.category and keeps_category and values_by_attribute:
         return "preference_correction"
     return "product_change"
@@ -323,6 +351,7 @@ def apply_preference_patch(
     preferences = {key: list(values) for key, values in state.preferences.items()}
     removed = {key: list(values) for key, values in state.removed_preferences.items()}
     no_preference = set(state.no_preference_attributes)
+    consecutive_no_preference_turns = state.consecutive_no_preference_turns
     search_terms = list(state.search_terms)
     evidence = list(state.preference_evidence)
     values_by_attribute = _normalized_patch_values(patch)
@@ -332,6 +361,8 @@ def apply_preference_patch(
     latest_recommendations = state.latest_recommendations
 
     patch_category = normalize_value(patch.category)
+    if _looks_like_attribute_constraint(patch_category):
+        patch_category = "unchanged"
     update_kind = _classify_update(
         state,
         patch,
@@ -343,6 +374,7 @@ def apply_preference_patch(
         preferences.clear()
         removed.clear()
         no_preference.clear()
+        consecutive_no_preference_turns = 0
         search_terms.clear()
         evidence.clear()
         asked_attributes = ()
@@ -351,12 +383,20 @@ def apply_preference_patch(
     elif update_kind == "preference_correction":
         corrected_attributes = set(values_by_attribute)
         evidence, retired = _retire_corrected(evidence, values_by_attribute)
-        evidence, retired_unsolicited = _retire_latest_unsolicited(
-            evidence,
-            corrected_attributes,
+        # Legacy reset patches did not identify the exact transition. Preserve
+        # their historical recovery behavior, while explicit model transitions
+        # replace only the attributes named by the shopper.
+        retire_latest_unsolicited = (
+            patch.correction_scope == "latest_unsolicited"
+            or (patch.reset_product_preferences and patch.update_type == "merge")
         )
-        if retired_unsolicited is not None:
-            retired.append(retired_unsolicited)
+        if retire_latest_unsolicited:
+            evidence, retired_unsolicited = _retire_latest_unsolicited(
+                evidence,
+                corrected_attributes,
+            )
+            if retired_unsolicited is not None:
+                retired.append(retired_unsolicited)
         for attribute in corrected_attributes:
             preferences.pop(attribute, None)
             removed.pop(attribute, None)
@@ -367,11 +407,12 @@ def apply_preference_patch(
             evidence,
             retired,
         )
-        preferences, search_terms = _keep_active_evidence_support(
-            preferences,
-            search_terms,
-            evidence,
-        )
+        if patch.reset_product_preferences and patch.update_type == "merge":
+            preferences, search_terms = _keep_active_evidence_support(
+                preferences,
+                search_terms,
+                evidence,
+            )
         latest_recommendations = ()
 
     for removal in patch.remove_preferences:
@@ -416,10 +457,12 @@ def apply_preference_patch(
                     term for term in search_terms if term != canonical_value
                 ]
 
+    applied_no_preference = False
     for raw_attribute in patch.no_preference_attributes:
         attribute = normalize_value(raw_attribute)
         if attribute not in ALLOWED_PREFERENCE_ATTRIBUTES:
             continue
+        applied_no_preference = True
         no_preference.add(attribute)
         if attribute == "category":
             category = None
@@ -437,14 +480,15 @@ def apply_preference_patch(
             retired_evidence,
         )
 
+    if applied_no_preference:
+        consecutive_no_preference_turns += 1
+    else:
+        consecutive_no_preference_turns = 0
+
     intent_mode = state.intent_mode
     if patch.intent_mode != "unchanged":
         intent_mode = patch.intent_mode
 
-    if update_kind == "preference_correction" and _looks_like_attribute_constraint(
-        patch_category
-    ):
-        patch_category = "unchanged"
     if patch_category and patch_category != "unchanged":
         category = patch_category
         no_preference.discard("category")
@@ -544,11 +588,19 @@ def apply_preference_patch(
         preferences={key: tuple(values) for key, values in preferences.items()},
         removed_preferences={key: tuple(values) for key, values in removed.items()},
         no_preference_attributes=frozenset(no_preference),
+        consecutive_no_preference_turns=consecutive_no_preference_turns,
         search_terms=tuple(search_terms),
         preference_evidence=tuple(evidence),
         asked_attributes=asked_attributes,
         previous_ask_attribute=previous_ask_attribute,
         latest_recommendations=latest_recommendations,
+        last_update_type=(
+            "product_change"
+            if update_kind == "product_change"
+            else "replace_preferences"
+            if update_kind == "preference_correction"
+            else "merge"
+        ),
     )
 
 
@@ -658,11 +710,32 @@ def parse_preference_fallback(
             if len(token) > 1 and token not in FALLBACK_STOPWORDS:
                 _append_unique(search_terms, token)
 
+    update_type: StateUpdateType = "merge"
+    if override:
+        current_category = normalize_value(state.category) if state.category else ""
+        normalized_category = normalize_value(category)
+        keeps_category = (
+            normalized_category == "unchanged"
+            or normalized_category == current_category
+            or _looks_like_attribute_constraint(normalized_category)
+        )
+        update_type = (
+            "replace_preferences"
+            if state.category and keeps_category and values
+            else "product_change"
+        )
+
     return PreferencePatch(
         intent_mode=intent_mode,
+        update_type=update_type,
+        correction_scope=(
+            "latest_unsolicited"
+            if update_type == "replace_preferences"
+            and references_unnamed_earlier_preference(message)
+            else "corrected_attributes"
+        ),
         category=category,
         set_preferences=values,
         no_preference_attributes=no_preference,
-        reset_product_preferences=override,
         search_terms=search_terms[:24],
     )

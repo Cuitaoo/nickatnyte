@@ -225,6 +225,68 @@ class ReAskPolicyTest(unittest.TestCase):
         message, attribute = choose_clarification(exhausted, 4, {})
         self.assertIsNone(attribute)
 
+    def test_other_is_asked_immediately_after_preference_override(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="watches",
+            preferences={"feature": ("water resistant",)},
+            last_update_type="replace_preferences",
+            turn=2,
+        )
+
+        message, attribute = choose_clarification(
+            state,
+            3,
+            broad_diagnostics(),
+        )
+
+        self.assertEqual(attribute, "other")
+
+    def test_initial_product_classification_is_not_treated_as_override(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            last_update_type="product_change",
+            turn=0,
+        )
+
+        message, attribute = choose_clarification(
+            state,
+            1,
+            broad_diagnostics(),
+        )
+
+        self.assertEqual(attribute, "category")
+
+    def test_other_is_asked_after_two_consecutive_no_preference_answers(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="shoes",
+            consecutive_no_preference_turns=2,
+        )
+
+        message, attribute = choose_clarification(
+            state,
+            4,
+            broad_diagnostics(),
+        )
+
+        self.assertEqual(attribute, "other")
+
+    def test_one_no_preference_answer_does_not_force_other(self) -> None:
+        state = replace(
+            ShoppingState.new("s", {}),
+            category="shoes",
+            consecutive_no_preference_turns=1,
+        )
+
+        message, attribute = choose_clarification(
+            state,
+            3,
+            {"material": self._diag("material")},
+        )
+
+        self.assertEqual(attribute, "material")
+
 
 if __name__ == "__main__":
     unittest.main()

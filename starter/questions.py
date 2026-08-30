@@ -50,6 +50,16 @@ def choose_clarification(
     if turn >= 10:
         return RECOMMENDATION_MESSAGE, None
 
+    can_ask_other = "other" not in state.no_preference_attributes
+    is_mid_session_override = (
+        state.turn > 0
+        and state.last_update_type in {"replace_preferences", "product_change"}
+    )
+    if can_ask_other and (
+        is_mid_session_override or state.consecutive_no_preference_turns >= 2
+    ):
+        return QUESTION_TEMPLATES["other"], "other"
+
     excluded = set(state.asked_attributes)
     # "other" harvests any undisclosed constraint, so repeat it until the
     # shopper says there is nothing left (no_preference below).

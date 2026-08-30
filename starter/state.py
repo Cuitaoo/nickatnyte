@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 IntentMode = Literal["buying", "browsing", "unknown"]
 EvidenceSource = Literal["unsolicited", "clarification", "correction"]
+StateUpdateType = Literal["merge", "replace_preferences", "product_change"]
+CorrectionScope = Literal["corrected_attributes", "latest_unsolicited"]
 
 ALLOWED_PREFERENCE_ATTRIBUTES = frozenset(
     {
@@ -42,6 +44,7 @@ class ShoppingState:
     preferences: dict[str, tuple[str, ...]] = field(default_factory=dict)
     removed_preferences: dict[str, tuple[str, ...]] = field(default_factory=dict)
     no_preference_attributes: frozenset[str] = frozenset()
+    consecutive_no_preference_turns: int = 0
     search_terms: tuple[str, ...] = ()
     preference_evidence: tuple[PreferenceEvidence, ...] = ()
     asked_attributes: tuple[str, ...] = ()
@@ -50,6 +53,7 @@ class ShoppingState:
     turn: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    last_update_type: StateUpdateType = "merge"
 
     @classmethod
     def new(cls, session_id: str, user_profile: dict[str, Any]) -> "ShoppingState":

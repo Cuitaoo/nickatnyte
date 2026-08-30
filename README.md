@@ -62,13 +62,28 @@ Available settings:
 
 - `OPENAI_API_KEY`: your private OpenAI API key.
 - `OPENAI_MODEL`: model used for preference interpretation; defaults to `gpt-5.6-luna`.
+- `OPENAI_BASE_URL`: optional OpenAI-compatible endpoint, such as
+  `http://localhost:11434/v1` for Ollama. Custom endpoints use the Chat
+  Completions protocol instead of the OpenAI Responses API.
 - `OPENAI_TIMEOUT_SECONDS`: request timeout, clamped to 1–60 seconds.
 - `OPENAI_MAX_RETRIES`: retry count, clamped to 0–3.
+- `OPENAI_REASONING_EFFORT`: optional reasoning setting supported by the model;
+  use `none` for Ollama state extraction to avoid hidden thinking latency.
+- `OPENAI_TEMPERATURE`: optional sampling temperature, clamped to 0–2; use `0`
+  for deterministic state extraction when the endpoint supports it.
 - `OPENAI_ENABLED`: set to `false` to guarantee no API calls.
 - `OPENAI_RERANK_ENABLED`: set to `true` to also rerank the top candidates
   with the model each turn (off by default posture; adds one call per turn).
 
 If the key is missing, OpenAI is disabled, or a request fails, the agent automatically uses its deterministic preference parser.
+
+The model performs one constrained state update per turn. It classifies the
+message as a normal merge, a same-product preference replacement, or a true
+product change. Deterministic code validates and applies that patch; retrieval,
+ranking, catalog IDs, and final response validation remain outside the model.
+For the current state-update test, model-generated query rewriting is disabled:
+category, preference values, removals, and search terms must be supported by a
+verbatim token span in the latest shopper message.
 
 ## Submission Posture: Offline First
 
@@ -87,8 +102,8 @@ model download; enable it with `TECHJAM_RERANK_ENABLED=true`. If the extras
 cannot be installed in the scoring environment, leave it disabled — the
 zero-dependency lexical mode above is the guaranteed fallback.
 
-The OpenAI integration (preference interpretation, vocabulary/intent
-translation, optional candidate reranking) is an **optional online
+The OpenAI integration (preference and state-update interpretation, optional
+candidate reranking) is an **optional online
 enhancement**: it activates only when a key is present and network access is
 allowed, and every failure path — timeout, invalid output, missing key —
 falls back to the deterministic behavior mid-turn. It exists as a hedge for
