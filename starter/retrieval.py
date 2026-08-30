@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from starter.audience import apply_audience_guardrail
 from starter.cross_encoder_reranker import CrossEncoderReranker
 from starter.state import ShoppingState
 from starter.synonyms import expand_terms
@@ -533,6 +534,11 @@ class CatalogRetriever:
         self._document_frequency: Counter[str] = Counter()
         self._fallback_ids: list[str] = []
         self.cross_encoder_reranker = CrossEncoderReranker.from_environment()
+        # Final business guardrail: demote wrong-audience products after
+        # semantic reranking. Soft by design, so a strong exact match wins.
+        self.audience_guardrail = _env_bool("TECHJAM_AUDIENCE_GUARDRAIL", False)
+        self.audience_penalty = _env_float("TECHJAM_AUDIENCE_PENALTY", 0.15, 0.0, 1.0)
+        self.audience_top_n = _env_int("TECHJAM_AUDIENCE_TOP_N", 20, 1, 200)
         self.vector_index: VectorCatalogIndex | None = None
         self.vector_top_k = _env_int("TECHJAM_VECTOR_TOP_K", 30, 1, 200)
         self.vector_weight = _env_float("TECHJAM_VECTOR_WEIGHT", 0.0, 0.0, 2.0)
@@ -907,6 +913,21 @@ class CatalogRetriever:
             candidates = tuple(
                 candidate_by_id[product_id]
                 for product_id in reranked_ids
+                if product_id in candidate_by_id
+            )
+        if self.audience_guardrail:
+            candidate_by_id = {candidate.product_id: candidate for candidate in candidates}
+            guarded_ids = apply_audience_guardrail(
+                [candidate.product_id for candidate in candidates],
+                self.metadata,
+                state,
+                latest_message,
+                penalty=self.audience_penalty,
+                top_n=self.audience_top_n,
+            )
+            candidates = tuple(
+                candidate_by_id[product_id]
+                for product_id in guarded_ids
                 if product_id in candidate_by_id
             )
         return SearchResult(
