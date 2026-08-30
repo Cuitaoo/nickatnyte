@@ -10,10 +10,12 @@ from starter.llm_agent import (
     InvalidInterpretation,
     PreferenceInterpreter,
 )
+from starter.orchestration import StrategyDecision, build_decision
 from starter.preference_tool import apply_preference_patch, parse_preference_fallback
 from starter.questions import choose_clarification
 from starter.reranker import CandidateReranker
-from starter.retrieval import CatalogRetriever, RetrievalWeights
+from starter.retrieval import CatalogRetriever, RetrievalWeights, _is_product_change
+from starter.tracks import dual_track_enabled, resolve_track
 from starter.state import ShoppingState
 
 
@@ -36,6 +38,7 @@ class Agent:
         self.catalog_path = Path(catalog_path)
         self.retriever = CatalogRetriever(self.catalog_path, weights=weights)
         self._sessions: dict[str, ShoppingState] = {}
+        self._decisions: dict[str, StrategyDecision] = {}
         self.defer_low_confidence_recommendations = _env_bool(
             "TECHJAM_DEFER_LOW_CONFIDENCE_RECOMMENDATIONS", True
         )
@@ -65,6 +68,16 @@ class Agent:
                 reset_method(session_id)
             except Exception:
                 pass
+
+    def last_decision(self, session_id: str) -> StrategyDecision | None:
+        """The strategy record for this session's most recent turn.
+
+        Deliberately not returned in the response payload: the submission
+        contract is exactly message/ask_attribute/recommendations/usage, and
+        widening it is not worth the risk. Read it from here for logging,
+        debugging, and explaining a turn.
+        """
+        return self._decisions.get(session_id)
 
     def session_state(self, session_id: str) -> ShoppingState:
         try:
@@ -135,17 +148,40 @@ class Agent:
             int(turn),
             search_result.diagnostics,
         )
-        if self.defer_low_confidence_recommendations and _should_defer_recommendations(
-            state,
-            int(turn),
-            ask_attribute,
-            search_result,
-            previous_category,
-        ):
+        deferred = bool(
+            self.defer_low_confidence_recommendations
+            and _should_defer_recommendations(
+                state,
+                int(turn),
+                ask_attribute,
+                search_result,
+                previous_category,
+            )
+        )
+        if deferred:
             identifiers = []
         depth = _recommendation_depth(int(turn), state.intent_mode)
+        applied_depth = None
         if depth is not None and ask_attribute is not None:
             identifiers = identifiers[:depth]
+            applied_depth = depth
+
+        track = (
+            resolve_track(state.intent_mode, _is_product_change(state, str(user_message)))
+            if dual_track_enabled()
+            else None
+        )
+        decision = build_decision(
+            state=state,
+            turn=int(turn),
+            track_name=track.name if track is not None else "neutral",
+            candidates=search_result.candidates,
+            returned_count=len(identifiers),
+            ask_attribute=ask_attribute,
+            deferred=deferred,
+            depth_cap=applied_depth,
+        )
+        self._decisions[session_id] = decision
         asked_attributes = list(state.asked_attributes)
         if ask_attribute and ask_attribute not in asked_attributes:
             asked_attributes.append(ask_attribute)
