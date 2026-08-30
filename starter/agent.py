@@ -134,6 +134,7 @@ class Agent:
             state,
             int(turn),
             search_result.diagnostics,
+            str(user_message),
         )
         if self.defer_low_confidence_recommendations and _should_defer_recommendations(
             state,

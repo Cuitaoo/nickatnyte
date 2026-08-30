@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from starter.retrieval import AttributeDiagnostic
+import os
+
+from starter.retrieval import AttributeDiagnostic, _is_override
 from starter.state import ShoppingState
 
 
@@ -33,6 +35,44 @@ QUESTION_PRIORS = {
 MIN_SPECIFIC_QUESTION_SCORE = 0.28
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(os.getenv(name, str(default)))
+    except ValueError:
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _should_promote_other(state: ShoppingState, latest_message: str) -> bool:
+    """Ask the open-ended question before the specific facets are exhausted.
+
+    "other" accepts any undisclosed constraint, while a specific attribute only
+    accepts constraints of its own kind, so promoting it harvests details that
+    do not fit the standard facets - model numbers, "rubber sole", "tie
+    closure". Two triggers, each independently switchable so they can be
+    measured apart:
+
+    - straight after an intent override, when the shopper has just restated
+      what they want and the remaining facets were chosen for the old intent
+    - once the shopper has answered "no preference" to enough specific
+      attributes that the structured facets look exhausted
+    """
+    if _env_bool("TECHJAM_OTHER_AFTER_OVERRIDE", False) and _is_override(latest_message):
+        return True
+
+    threshold = _env_int("TECHJAM_OTHER_AFTER_NO_PREFERENCE", 0, 0, 10)
+    if threshold and len(state.no_preference_attributes) >= threshold:
+        return True
+    return False
+
+
 def _question_score(attribute: str, item: AttributeDiagnostic) -> float:
     return (
         0.45 * item.disagreement
@@ -46,6 +86,7 @@ def choose_clarification(
     state: ShoppingState,
     turn: int,
     diagnostics: dict[str, AttributeDiagnostic],
+    latest_message: str = "",
 ) -> tuple[str, str | None]:
     if turn >= 10:
         return RECOMMENDATION_MESSAGE, None
@@ -83,6 +124,12 @@ def choose_clarification(
         and category_diagnostic.disagreement >= 0.35
     ):
         return QUESTION_TEMPLATES["category"], "category"
+
+    # Placed after the category question so a genuine product change still
+    # gets asked first, but ahead of the specific facets so "other" no longer
+    # waits for every one of them to score badly.
+    if "other" not in excluded and _should_promote_other(state, latest_message):
+        return QUESTION_TEMPLATES["other"], "other"
 
     scored: list[tuple[float, str]] = []
     for attribute, item in diagnostics.items():

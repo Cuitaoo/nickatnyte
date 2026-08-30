@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 from dataclasses import replace
 
@@ -228,3 +229,91 @@ class ReAskPolicyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PromoteOtherTest(unittest.TestCase):
+    """Triggers that ask the open-ended question before facets are exhausted."""
+
+    def setUp(self):
+        for name in (
+            "TECHJAM_OTHER_AFTER_OVERRIDE",
+            "TECHJAM_OTHER_AFTER_NO_PREFERENCE",
+        ):
+            os.environ.pop(name, None)
+        self.addCleanup(self._clear)
+
+    def _clear(self):
+        for name in (
+            "TECHJAM_OTHER_AFTER_OVERRIDE",
+            "TECHJAM_OTHER_AFTER_NO_PREFERENCE",
+        ):
+            os.environ.pop(name, None)
+
+    def _state(self, **kwargs):
+        state = ShoppingState.new("s", {})
+        return replace(state, category="jeans", **kwargs)
+
+    def test_disabled_by_default(self):
+        state = self._state(no_preference_attributes=frozenset({"color", "size"}))
+        _, attribute = choose_clarification(
+            state, 3, broad_diagnostics(), "Actually, ignore my earlier preference."
+        )
+        self.assertNotEqual(attribute, "other")
+
+    def test_override_trigger(self):
+        os.environ["TECHJAM_OTHER_AFTER_OVERRIDE"] = "true"
+        state = self._state()
+        _, attribute = choose_clarification(
+            state, 3, broad_diagnostics(), "Actually, ignore my earlier preference."
+        )
+        self.assertEqual(attribute, "other")
+
+    def test_override_trigger_ignores_ordinary_messages(self):
+        os.environ["TECHJAM_OTHER_AFTER_OVERRIDE"] = "true"
+        state = self._state()
+        _, attribute = choose_clarification(
+            state, 3, broad_diagnostics(), "For that, what matters is: cotton."
+        )
+        self.assertNotEqual(attribute, "other")
+
+    def test_no_preference_threshold(self):
+        os.environ["TECHJAM_OTHER_AFTER_NO_PREFERENCE"] = "2"
+        below = self._state(no_preference_attributes=frozenset({"color"}))
+        _, attribute = choose_clarification(below, 3, broad_diagnostics(), "hello")
+        self.assertNotEqual(attribute, "other")
+
+        at = self._state(no_preference_attributes=frozenset({"color", "size"}))
+        _, attribute = choose_clarification(at, 3, broad_diagnostics(), "hello")
+        self.assertEqual(attribute, "other")
+
+    def test_zero_threshold_is_off(self):
+        os.environ["TECHJAM_OTHER_AFTER_NO_PREFERENCE"] = "0"
+        state = self._state(no_preference_attributes=frozenset({"color", "size", "brand"}))
+        _, attribute = choose_clarification(state, 3, broad_diagnostics(), "hello")
+        self.assertNotEqual(attribute, "other")
+
+    def test_not_asked_again_once_declined(self):
+        """A shopper who said no preference for 'other' is not re-asked."""
+        os.environ["TECHJAM_OTHER_AFTER_OVERRIDE"] = "true"
+        state = self._state(no_preference_attributes=frozenset({"other", "color"}))
+        _, attribute = choose_clarification(
+            state, 3, broad_diagnostics(), "Actually, ignore my earlier preference."
+        )
+        self.assertNotEqual(attribute, "other")
+
+    def test_category_question_still_wins(self):
+        """A real product change is asked before the open-ended fallback."""
+        os.environ["TECHJAM_OTHER_AFTER_OVERRIDE"] = "true"
+        state = replace(ShoppingState.new("s", {}), category=None)
+        _, attribute = choose_clarification(
+            state, 2, broad_diagnostics(), "Actually, ignore that. I need hiking boots."
+        )
+        self.assertEqual(attribute, "category")
+
+    def test_turn_cap_still_applies(self):
+        os.environ["TECHJAM_OTHER_AFTER_OVERRIDE"] = "true"
+        state = self._state()
+        _, attribute = choose_clarification(
+            state, 10, broad_diagnostics(), "Actually, ignore my earlier preference."
+        )
+        self.assertIsNone(attribute)
