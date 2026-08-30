@@ -195,6 +195,29 @@ visible, testable, and explainable.
 > data (163/154/144/101 of 200 sessions). The most-used signals are close to a
 > uniform boost.
 >
+> **Post-truncation reorder, tried second.** Applying the same signal after
+> selection and after the depth cap, so it can only permute the returned list.
+> The isolation works and is worth keeping as a pattern:
+>
+> ```text
+> hit@10   0.990 -> 0.990   (identical, provably frozen)
+> MTTC     3.570 -> 3.570   (identical, provably frozen)
+> MRR      0.807740 -> 0.786254   (-0.021486)
+> ```
+>
+> Confined to the 0.30 MRR term exactly as intended - but MRR got *worse*, and
+> browsing worst of all (-0.047916). The contrast with the pre-truncation
+> result is the diagnosis: pre-truncation the profile helped by pulling better
+> candidates *into* the top 10 (a membership effect), while as pure ranking it
+> is noise. A signal matching ~half the catalogue shuffles the list at random
+> and displaces the target downward.
+>
+> So the profile expansion has no discriminative power. It never ranked; it
+> only ever changed selection, and on public that happened to pay.
+>
+> **The reorder pattern itself is sound and reusable** - any future business
+> guardrail can be applied this way to get Hit@10 and MTTC immunity for free.
+>
 > **The fix is item 4's IDF cap, applied here**: weight each expansion by
 > inverse document frequency so `weather` and `durability` carry real evidence
 > while `material` and `comfort` are damped toward zero. Retry after that

@@ -92,6 +92,18 @@ MAX_BOOST_UNKNOWN = 0.08
 # Per matched tag, before the ceiling applies.
 BOOST_PER_TAG = 0.045
 
+# Positional denominator for the reorder. Fixed rather than the list length so
+# one position is always worth 1/10 and the ceiling reads as a stable number of
+# places, however few products came back.
+REORDER_SLOTS = 10
+
+# The scoring boosts are sized for the additive retrieval score; in the
+# reorder they are read in position units, where one place costs 1/10. Without
+# a gain a single matched tag (0.045) cannot climb even one place and the pass
+# silently does nothing. At 2.5, browsing's 0.18 ceiling buys ~4.5 places and
+# buying's 0.015 buys ~0.4 - a genuine tie-breaker, exactly as intended.
+REORDER_GAIN = 2.5
+
 
 def semantic_profile_enabled() -> bool:
     return _env_bool("TECHJAM_PROFILE_SEMANTIC", False)
@@ -163,3 +175,44 @@ def match_profile(
     per_tag = _env_float("TECHJAM_PROFILE_PER_TAG", BOOST_PER_TAG, 0.0, 1.0)
     boost = min(max_boost(intent_mode), per_tag * len(matched))
     return boost, tuple(matched)
+
+
+def profile_reorder_enabled() -> bool:
+    return _env_bool("TECHJAM_PROFILE_REORDER", False)
+
+
+def reorder_by_profile(
+    identifiers: list[str],
+    metadata: dict,
+    tags: tuple[str, ...],
+    intent_mode: str = "unknown",
+) -> tuple[list[str], tuple[str, ...]]:
+    """Reorder an already-selected list without changing what is in it.
+
+    Applied after selection and after the depth cap, so the returned set is
+    frozen before this runs. Hit@10 and MTTC therefore cannot move - the same
+    products appear on the same turn - and only the rank of the target within
+    the list can change. That confines the whole feature to the 0.30 MRR term
+    and removes its exposure to the 0.50 Hit@10 and 0.20 Efficiency terms.
+
+    Position i is scored (REORDER_SLOTS - i) / REORDER_SLOTS, normalized by a
+    fixed denominator rather than the list length: with the length, a short
+    list spaces positions so far apart that the ceiling can never overtake
+    anything, and the feature silently does nothing. Ties keep their original
+    order.
+
+    Returns the new order and the tags that matched whatever ended up first.
+    """
+    if len(identifiers) < 2 or not tags:
+        return identifiers, ()
+
+    scored: list[tuple[float, int, str, tuple[str, ...]]] = []
+    for index, product_id in enumerate(identifiers):
+        corpus = str((metadata.get(product_id) or {}).get("corpus") or "")
+        boost, matched = match_profile(corpus, tags, intent_mode)
+        base = (REORDER_SLOTS - index) / REORDER_SLOTS
+        gain = _env_float("TECHJAM_PROFILE_REORDER_GAIN", REORDER_GAIN, 0.0, 20.0)
+        scored.append((base + boost * gain, index, product_id, matched))
+
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [product_id for _, _, product_id, _ in scored], scored[0][3]

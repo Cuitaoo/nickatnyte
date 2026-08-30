@@ -11,6 +11,11 @@ from starter.llm_agent import (
     PreferenceInterpreter,
 )
 from starter.orchestration import StrategyDecision, build_decision
+from starter.profile import (
+    profile_reorder_enabled,
+    profile_tags,
+    reorder_by_profile,
+)
 from starter.preference_tool import apply_preference_patch, parse_preference_fallback
 from starter.questions import choose_clarification
 from starter.reranker import CandidateReranker
@@ -166,6 +171,17 @@ class Agent:
             identifiers = identifiers[:depth]
             applied_depth = depth
 
+        # Business guardrail final pass. Runs after the depth cap, so the
+        # returned set is already frozen: this can only permute it.
+        reordered_tags: tuple[str, ...] = ()
+        if profile_reorder_enabled() and len(identifiers) > 1:
+            identifiers, reordered_tags = reorder_by_profile(
+                identifiers,
+                self.retriever.metadata,
+                profile_tags(state.user_profile),
+                state.intent_mode,
+            )
+
         track = (
             resolve_track(state.intent_mode, _is_product_change(state, str(user_message)))
             if dual_track_enabled()
@@ -181,6 +197,8 @@ class Agent:
             deferred=deferred,
             depth_cap=applied_depth,
         )
+        if reordered_tags:
+            decision = replace(decision, profile_tags_matched=reordered_tags)
         self._decisions[session_id] = decision
         asked_attributes = list(state.asked_attributes)
         if ask_attribute and ask_attribute not in asked_attributes:

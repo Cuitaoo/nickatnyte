@@ -2,6 +2,7 @@ import os
 import unittest
 
 from starter.profile import (
+    reorder_by_profile,
     PROFILE_EXPANSIONS,
     match_profile,
     max_boost,
@@ -109,3 +110,60 @@ class MatchProfileTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReorderByProfileTest(unittest.TestCase):
+    """Post-truncation reordering: set membership is frozen, order is not."""
+
+    def setUp(self):
+        self.metadata = {
+            "plain1": {"corpus": "steel watch band metal clasp"},
+            "plain2": {"corpus": "plastic sunglasses case"},
+            "match1": {"corpus": "cushioned breathable relaxed cotton tee"},
+            "match2": {"corpus": "soft padded lightweight fleece"},
+        }
+
+    def test_membership_is_never_changed(self):
+        ids = ["plain1", "match1", "plain2", "match2"]
+        got, _ = reorder_by_profile(ids, self.metadata, ("comfort",), "browsing")
+        self.assertEqual(sorted(got), sorted(ids))
+        self.assertEqual(len(got), len(ids))
+
+    def test_matching_products_move_up(self):
+        ids = ["plain1", "plain2", "match1"]
+        got, _ = reorder_by_profile(ids, self.metadata, ("comfort",), "browsing")
+        self.assertLess(got.index("match1"), got.index("plain2"))
+
+    def test_buying_moves_less_than_browsing(self):
+        ids = ["plain1", "plain2", "plain2b", "match1"]
+        meta = dict(self.metadata, plain2b={"corpus": "leather belt buckle"})
+        buying, _ = reorder_by_profile(list(ids), meta, ("comfort",), "buying")
+        browsing, _ = reorder_by_profile(list(ids), meta, ("comfort",), "browsing")
+        self.assertLessEqual(browsing.index("match1"), buying.index("match1"))
+
+    def test_no_tags_is_a_no_op(self):
+        ids = ["plain1", "match1"]
+        got, tags = reorder_by_profile(ids, self.metadata, (), "browsing")
+        self.assertEqual(got, ids)
+        self.assertEqual(tags, ())
+
+    def test_single_item_is_a_no_op(self):
+        """At depth 1 there is nothing to reorder, so it cannot move MTTC."""
+        got, tags = reorder_by_profile(["match1"], self.metadata, ("comfort",), "browsing")
+        self.assertEqual(got, ["match1"])
+        self.assertEqual(tags, ())
+
+    def test_ties_keep_original_order(self):
+        ids = ["plain1", "plain2"]
+        got, _ = reorder_by_profile(ids, self.metadata, ("comfort",), "browsing")
+        self.assertEqual(got, ids)
+
+    def test_reports_tags_matching_the_new_leader(self):
+        ids = ["plain1", "match1"]
+        _, tags = reorder_by_profile(ids, self.metadata, ("comfort",), "browsing")
+        self.assertEqual(tags, ("comfort",))
+
+    def test_missing_metadata_is_survivable(self):
+        ids = ["ghost", "match1"]
+        got, _ = reorder_by_profile(ids, self.metadata, ("comfort",), "browsing")
+        self.assertEqual(sorted(got), ["ghost", "match1"])
