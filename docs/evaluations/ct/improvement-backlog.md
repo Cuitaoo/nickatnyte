@@ -171,6 +171,37 @@ visible, testable, and explainable.
 
 ## 7. Safe personalization
 
+> **Attempted and left off.** `starter/profile.py` expands the closed
+> nine-value tag vocabulary into catalog terms, scales the boost by intent
+> (buying weak, browsing strong, never a hard constraint), and records which
+> tags matched each candidate. It measured:
+>
+> | set | delta | Hit@10 | browsing MRR |
+> | --- | --- | --- | --- |
+> | public | +0.000585 | 0.990 -> 0.985 | **+0.016091** |
+> | held-out synthetic | **-0.006014** | 0.950 -> 0.945 | **-0.023244** |
+>
+> Browsing MRR **reverses sign** between the two sets, which is overfitting,
+> not a mistuned constant. The cause is measurable: the expanded tags are too
+> common to discriminate. Fraction of the catalogue each one matches -
+>
+> ```text
+> material    60.8%      style   46.4%      performance  37.3%
+> comfort     51.9%      fit     45.5%      warmth       20.2%
+> durability  16.2%      weather 11.2%
+> ```
+>
+> and `fit`, `material`, `comfort`, `style` are the four commonest tags in the
+> data (163/154/144/101 of 200 sessions). The most-used signals are close to a
+> uniform boost.
+>
+> **The fix is item 4's IDF cap, applied here**: weight each expansion by
+> inverse document frequency so `weather` and `durability` carry real evidence
+> while `material` and `comfort` are damped toward zero. Retry after that
+> exists, not before.
+
+
+
 Do **not** build a long-term profile database — the evaluator provides an
 aggregate profile per session.
 

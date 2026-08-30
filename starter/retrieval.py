@@ -12,6 +12,7 @@ from typing import Any, Iterable
 
 from starter.audience import apply_audience_guardrail
 from starter.cross_encoder_reranker import CrossEncoderReranker
+from starter.profile import match_profile, profile_tags, semantic_profile_enabled
 from starter.state import ShoppingState
 from starter.synonyms import expand_terms
 from starter.tracks import (
@@ -137,6 +138,7 @@ class RankedCandidate:
     route_ranks: tuple[tuple[str, int], ...]
     matched_attributes: frozenset[str] = frozenset()
     score_components: tuple[tuple[str, float], ...] = ()
+    matched_profile_tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -838,6 +840,8 @@ class CatalogRetriever:
                 *state.search_terms,
             ]
         )
+        session_profile_tags = profile_tags(state.user_profile)
+        profile_hits: dict[str, tuple[str, ...]] = {}
         override_message = _is_product_change(state, latest_message)
         category_weight = (
             0.15
@@ -883,7 +887,16 @@ class CatalogRetriever:
                 for value in values:
                     if self._preference_matches(attribute, value, product):
                         parts[f"removed:{attribute}"] -= weights.removed_attribute_penalty
-            if profile_terms:
+            if semantic_profile_enabled():
+                # Expanded tags against catalog vocabulary, scaled by intent and
+                # recorded by name so the personalization can be explained.
+                boost, tags = match_profile(
+                    product["corpus"], session_profile_tags, state.intent_mode
+                )
+                if boost:
+                    parts["profile"] += boost
+                    profile_hits[product_id] = tags
+            elif profile_terms:
                 corpus = product["corpus"]
                 matched_terms = sum(1 for term in profile_terms if term in corpus)
                 if matched_terms:
@@ -905,6 +918,7 @@ class CatalogRetriever:
                 score=scores[product_id],
                 route_ranks=tuple(sorted(route_ranks[product_id])),
                 matched_attributes=frozenset(matched[product_id]),
+                matched_profile_tags=profile_hits.get(product_id, ()),
                 score_components=tuple(
                     sorted(
                         (key, value)

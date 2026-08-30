@@ -43,6 +43,9 @@ class StrategyDecision:
     deferred: bool = False
     depth_cap: int | None = None
     next_question: str | None = None
+    # Profile tags that actually matched the top candidate. Personalization
+    # that cannot be explained should not be applied.
+    profile_tags_matched: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -56,6 +59,8 @@ class StrategyDecision:
             parts.append("soft=" + ",".join(self.soft_constraints))
         if self.removed_constraints:
             parts.append("removed=" + ",".join(self.removed_constraints))
+        if self.profile_tags_matched:
+            parts.append("profile=" + ",".join(self.profile_tags_matched))
         if self.routes_enabled:
             parts.append("routes=" + ",".join(self.routes_enabled))
         parts.append(f"pool={self.candidate_count}")
@@ -143,6 +148,8 @@ def build_decision(
 ) -> StrategyDecision:
     hard, soft = constraint_split(state)
     routes, vector_used = route_summary(candidates)
+    items = list(candidates or ())
+    matched_tags = tuple(getattr(items[0], "matched_profile_tags", ()) if items else ())
     return StrategyDecision(
         turn=turn,
         action=classify_action(returned_count, ask_attribute, deferred),
@@ -159,4 +166,5 @@ def build_decision(
         deferred=deferred,
         depth_cap=depth_cap,
         next_question=ask_attribute,
+        profile_tags_matched=matched_tags,
     )
