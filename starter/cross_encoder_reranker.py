@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import math
-import os
 from typing import Any
 
 from starter.state import ShoppingState
+from starter import config
 
 
 DEFAULT_RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L6-v2"
@@ -31,24 +31,24 @@ class CrossEncoderReranker:
 
     @classmethod
     def from_environment(cls) -> "CrossEncoderReranker | None":
-        enabled = os.getenv("TECHJAM_RERANK_ENABLED", "false").strip().lower()
+        enabled = config.getenv("TECHJAM_RERANK_ENABLED", "false").strip().lower()
         if enabled in {"0", "false", "no", "off"}:
             return None
         return cls(
-            os.getenv("TECHJAM_RERANK_MODEL", DEFAULT_RERANK_MODEL).strip()
+            config.getenv("TECHJAM_RERANK_MODEL", DEFAULT_RERANK_MODEL).strip()
             or DEFAULT_RERANK_MODEL,
             max_candidates=_bounded_int(
-                os.getenv("TECHJAM_RERANK_TOP_N", "10"), minimum=5, maximum=80
+                config.getenv("TECHJAM_RERANK_TOP_N", "10"), minimum=5, maximum=80
             ),
             batch_size=_bounded_int(
-                os.getenv("TECHJAM_RERANK_BATCH_SIZE", "16"), minimum=1, maximum=64
+                config.getenv("TECHJAM_RERANK_BATCH_SIZE", "16"), minimum=1, maximum=64
             ),
             weight=_bounded_float(
-                os.getenv("TECHJAM_RERANK_WEIGHT", "0.65"), minimum=0.0, maximum=2.0
+                config.getenv("TECHJAM_RERANK_WEIGHT", "0.65"), minimum=0.0, maximum=2.0
             ),
-            local_files_only=os.getenv("TECHJAM_RERANK_LOCAL_ONLY", "true").strip().lower()
+            local_files_only=config.getenv("TECHJAM_RERANK_LOCAL_ONLY", "true").strip().lower()
             not in {"0", "false", "no", "off"},
-            text_format=os.getenv("TECHJAM_RERANK_TEXT_FORMAT", "legacy"),
+            text_format=config.getenv("TECHJAM_RERANK_TEXT_FORMAT", "legacy"),
         )
 
     def rerank(

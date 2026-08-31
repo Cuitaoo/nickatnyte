@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from threading import Lock
@@ -31,6 +30,7 @@ from starter.query_expansion import (
     validate_scenario_hypotheses,
 )
 from starter.state import ShoppingState
+from starter import config
 
 
 SYSTEM_PROMPT = """You are the state updater for a conversational catalog search system.
@@ -429,19 +429,19 @@ class PreferenceInterpreter:
 
     @classmethod
     def from_environment(cls) -> "PreferenceInterpreter | None":
-        enabled = os.getenv("OPENAI_ENABLED", "true").strip().lower()
+        enabled = config.getenv("OPENAI_ENABLED", "true").strip().lower()
         if enabled in {"0", "false", "no", "off"}:
             return None
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        api_key = config.getenv("OPENAI_API_KEY", "").strip()
         if not api_key:
             return None
-        model_name = os.getenv("OPENAI_MODEL", "gpt-5.6-luna").strip()
-        base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+        model_name = config.getenv("OPENAI_MODEL", "gpt-5.6-luna").strip()
+        base_url = config.getenv("OPENAI_BASE_URL", "").strip()
         timeout = _bounded_float(
-            os.getenv("OPENAI_TIMEOUT_SECONDS", "20"), minimum=1.0, maximum=60.0
+            config.getenv("OPENAI_TIMEOUT_SECONDS", "20"), minimum=1.0, maximum=60.0
         )
         max_retries = _bounded_int(
-            os.getenv("OPENAI_MAX_RETRIES", "1"), minimum=0, maximum=3
+            config.getenv("OPENAI_MAX_RETRIES", "1"), minimum=0, maximum=3
         )
         model_kwargs = {
             "api_key": api_key,
@@ -452,10 +452,10 @@ class PreferenceInterpreter:
         }
         if base_url:
             model_kwargs["base_url"] = base_url
-        reasoning_effort = os.getenv("OPENAI_REASONING_EFFORT", "").strip()
+        reasoning_effort = config.getenv("OPENAI_REASONING_EFFORT", "").strip()
         if reasoning_effort:
             model_kwargs["reasoning_effort"] = reasoning_effort
-        temperature = os.getenv("OPENAI_TEMPERATURE", "").strip()
+        temperature = config.getenv("OPENAI_TEMPERATURE", "").strip()
         if temperature:
             model_kwargs["temperature"] = _bounded_float(
                 temperature, minimum=0.0, maximum=2.0

@@ -178,6 +178,17 @@ class AgentRerankIntegrationTest(unittest.TestCase):
         self.assertEqual(response["usage"]["prompt_tokens"], 7)
         self.assertEqual(response["usage"]["completion_tokens"], 3)
 
+    # Pin the depth policy open: this test is about the reranker failing
+    # safely, not about when the agent chooses to show results.
+    @patch.dict(
+        "os.environ",
+        {
+            "TECHJAM_DEFER_LOW_CONFIDENCE_RECOMMENDATIONS": "false",
+            "TECHJAM_CONFIDENCE_CONTROLLER": "false",
+            "TECHJAM_DEPTH_MODE": "turn",
+            "TECHJAM_DEPTH_SCHEDULE": "",
+        },
+    )
     def test_agent_keeps_original_order_when_reranker_fails(self) -> None:
         import json
         import tempfile

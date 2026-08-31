@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass
+from starter import config
 
 
 SPACE_RE = re.compile(r"\s+")
@@ -42,7 +42,7 @@ class ScenarioHypothesis:
 def query_expansion_mode() -> str:
     if not _env_bool("TECHJAM_QUERY_EXPANSION_ENABLED", False):
         return "off"
-    mode = os.getenv("TECHJAM_QUERY_EXPANSION_MODE", "shadow").strip().lower()
+    mode = config.getenv("TECHJAM_QUERY_EXPANSION_MODE", "shadow").strip().lower()
     return mode if mode in {"shadow", "recall"} else "shadow"
 
 
@@ -160,7 +160,7 @@ def _is_token_span(value: str, message_tokens: list[str]) -> bool:
 
 
 def _env_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
+    value = config.getenv(name)
     if value is None:
         return default
     return value.strip().lower() not in {"0", "false", "no", "off", ""}
@@ -168,7 +168,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
     try:
-        value = float(os.getenv(name, str(default)))
+        value = float(config.getenv(name, str(default)))
     except ValueError:
         value = default
     return min(maximum, max(minimum, value))
@@ -176,7 +176,7 @@ def _env_float(name: str, default: float, minimum: float, maximum: float) -> flo
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     try:
-        value = int(os.getenv(name, str(default)))
+        value = int(config.getenv(name, str(default)))
     except ValueError:
         value = default
     return min(maximum, max(minimum, value))

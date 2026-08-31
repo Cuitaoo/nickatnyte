@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import os
 
 from starter.retrieval import AttributeDiagnostic
 from starter.state import ShoppingState
+from starter import config
 
 
 RECOMMENDATION_MESSAGE = "Here are the closest matches I found."
@@ -36,7 +36,7 @@ MIN_SPECIFIC_QUESTION_SCORE = 0.28
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
+    value = config.getenv(name)
     if value is None:
         return default
     return value.strip().lower() not in {"0", "false", "no", "off", ""}
@@ -44,7 +44,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
     try:
-        parsed = float(os.getenv(name, str(default)))
+        parsed = float(config.getenv(name, str(default)))
     except ValueError:
         parsed = default
     return max(minimum, min(maximum, parsed))
@@ -52,7 +52,7 @@ def _env_float(name: str, default: float, minimum: float, maximum: float) -> flo
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     try:
-        parsed = int(os.getenv(name, str(default)))
+        parsed = int(config.getenv(name, str(default)))
     except ValueError:
         parsed = default
     return max(minimum, min(maximum, parsed))

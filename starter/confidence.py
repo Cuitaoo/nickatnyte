@@ -18,9 +18,9 @@ the shopper's stated constraints the leader satisfies.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any
+from starter import config
 
 # Strategies the controller can select.
 RECOMMEND_NOW = "recommend_now"
@@ -81,7 +81,7 @@ def controller_enabled() -> bool:
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
+    value = config.getenv(name)
     if value is None:
         return default
     return value.strip().lower() not in {"0", "false", "no", "off", ""}
@@ -89,7 +89,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
     try:
-        parsed = float(os.getenv(name, str(default)))
+        parsed = float(config.getenv(name, str(default)))
     except ValueError:
         parsed = default
     return max(minimum, min(maximum, parsed))
@@ -97,7 +97,7 @@ def _env_float(name: str, default: float, minimum: float, maximum: float) -> flo
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     try:
-        parsed = int(os.getenv(name, str(default)))
+        parsed = int(config.getenv(name, str(default)))
     except ValueError:
         parsed = default
     return max(minimum, min(maximum, parsed))
@@ -231,7 +231,7 @@ def depth_mode() -> str:
     "hybrid"     - cap by how separated the ranking actually is, so the list
                    widens with confidence rather than with the clock.
     """
-    value = os.getenv("TECHJAM_DEPTH_MODE", "turn").strip().lower()
+    value = config.getenv("TECHJAM_DEPTH_MODE", "turn").strip().lower()
     return value if value in {"turn", "confidence", "hybrid"} else "turn"
 
 

@@ -113,16 +113,18 @@ class CrossEncoderRerankerTest(unittest.TestCase):
         )
         self.assertEqual(result, ["A", "B", "C"])
 
-    def test_from_environment_defaults_off(self) -> None:
+    def test_from_environment_ships_on_and_can_be_switched_off(self) -> None:
+        # Reranking is part of the shipped configuration, so an empty
+        # environment must construct it; the switch still has to work.
         environment = {"OPENAI_API_KEY": "sk-test"}
         with patch.dict(os.environ, environment, clear=True):
-            self.assertIsNone(CrossEncoderReranker.from_environment())
+            self.assertIsNotNone(CrossEncoderReranker.from_environment())
         with patch.dict(
             os.environ,
-            {**environment, "TECHJAM_RERANK_ENABLED": "true"},
+            {**environment, "TECHJAM_RERANK_ENABLED": "false"},
             clear=True,
         ):
-            self.assertIsNotNone(CrossEncoderReranker.from_environment())
+            self.assertIsNone(CrossEncoderReranker.from_environment())
 
 
 if __name__ == "__main__":

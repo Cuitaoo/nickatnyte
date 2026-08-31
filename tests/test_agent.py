@@ -20,6 +20,20 @@ from starter.query_expansion import ScenarioHypothesis
 from starter.state import ALLOWED_PREFERENCE_ATTRIBUTES, ShoppingState
 
 
+# The shipped configuration withholds results until the ranking has separated,
+# so at turn 1 a correct agent legitimately returns nothing. Tests below that
+# exercise a different mechanism - the LLM fallback, the retrieval fallback,
+# override handling - pin the depth policy open, so a depth decision cannot
+# masquerade as a failure of the thing under test. The policy itself is
+# covered in test_confidence.py.
+FULL_DEPTH = {
+    "TECHJAM_DEFER_LOW_CONFIDENCE_RECOMMENDATIONS": "false",
+    "TECHJAM_CONFIDENCE_CONTROLLER": "false",
+    "TECHJAM_DEPTH_MODE": "turn",
+    "TECHJAM_DEPTH_SCHEDULE": "",
+}
+
+
 CATALOG = [
     {
         "parent_asin": "BLUE_SHOE",
@@ -358,6 +372,7 @@ class AgentIntegrationTest(unittest.TestCase):
         self.assertEqual(updated.last_update_type, "replace_preferences")
         self.assertEqual(response["usage"], {"prompt_tokens": 11, "completion_tokens": 2})
 
+    @patch.dict("os.environ", FULL_DEPTH)
     def test_api_failure_uses_fallback_and_returns_contract_shape(self) -> None:
         agent = Agent(self.catalog_path, interpreter=FailingInterpreter())
         self.addCleanup(agent.close)
@@ -375,6 +390,7 @@ class AgentIntegrationTest(unittest.TestCase):
             set(response), {"message", "ask_attribute", "recommendations", "usage"}
         )
 
+    @patch.dict("os.environ", FULL_DEPTH)
     def test_retrieval_failure_uses_deterministic_catalog_fallback(self) -> None:
         agent = Agent(self.catalog_path, interpreter=None)
         self.addCleanup(agent.close)
@@ -459,21 +475,19 @@ class AgentIntegrationTest(unittest.TestCase):
         self.assertEqual(response["recommendations"], [])
 
     def test_low_confidence_deferral_can_be_disabled(self) -> None:
-        with patch.dict(
-            "os.environ",
-            {"TECHJAM_DEFER_LOW_CONFIDENCE_RECOMMENDATIONS": "false"},
-        ):
+        with patch.dict("os.environ", FULL_DEPTH):
             agent = Agent(self.catalog_path, interpreter=None)
-        self.addCleanup(agent.close)
-        agent.reset("s", {"summary": "", "preference_tags": []})
+            self.addCleanup(agent.close)
+            agent.reset("s", {"summary": "", "preference_tags": []})
 
-        response = agent.respond(
-            "s", "I'm looking for shoes, but I'm still exploring.", 1, 10
-        )
+            response = agent.respond(
+                "s", "I'm looking for shoes, but I'm still exploring.", 1, 10
+            )
 
         self.assertIsNotNone(response["ask_attribute"])
         self.assertNotEqual(response["recommendations"], [])
 
+    @patch.dict("os.environ", FULL_DEPTH)
     def test_intent_override_clears_old_questions_and_recommendations(self) -> None:
         interpreter = QueueInterpreter(
             [

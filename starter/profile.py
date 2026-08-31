@@ -24,8 +24,8 @@ preference always outranks an inferred one.
 
 from __future__ import annotations
 
-import os
 from typing import Callable
+from starter import config
 
 # The public and synthetic sets draw from a closed tag vocabulary. These
 # expansions are generic apparel vocabulary, not target-specific terms, so they
@@ -111,7 +111,7 @@ def semantic_profile_enabled() -> bool:
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
+    value = config.getenv(name)
     if value is None:
         return default
     return value.strip().lower() not in {"0", "false", "no", "off", ""}
@@ -119,7 +119,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
     try:
-        parsed = float(os.getenv(name, str(default)))
+        parsed = float(config.getenv(name, str(default)))
     except ValueError:
         parsed = default
     return max(minimum, min(maximum, parsed))

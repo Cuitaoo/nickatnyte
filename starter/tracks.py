@@ -17,9 +17,9 @@ misread degrades to a slightly mistuned ranking instead of a different system.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, replace
 from typing import Any
+from starter import config
 
 
 @dataclass(frozen=True)
@@ -80,7 +80,7 @@ def diversity_enabled() -> bool:
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
+    value = config.getenv(name)
     if value is None:
         return default
     return value.strip().lower() not in {"0", "false", "no", "off", ""}
@@ -113,7 +113,7 @@ def resolve_track(intent_mode: str, is_product_change: bool = False) -> TrackPro
 def track_strength() -> float:
     """How far to move from neutral toward the track. 0 disables, 1 is full."""
     try:
-        parsed = float(os.getenv("TECHJAM_DUAL_TRACK_STRENGTH", "1.0"))
+        parsed = float(config.getenv("TECHJAM_DUAL_TRACK_STRENGTH", "1.0"))
     except ValueError:
         parsed = 1.0
     return max(0.0, min(1.0, parsed))

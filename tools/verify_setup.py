@@ -1,14 +1,15 @@
 """Diagnose why a machine does not reproduce the reported score.
 
-Run it before opening a bug: it checks the four things that actually differ
-between machines and prints what it found, rather than making you guess.
+Run it before opening a bug: it checks the things that actually differ between
+machines and prints what it found, rather than making you guess.
 
     PYTHONPATH=. python tools/verify_setup.py --catalog /path/to/catalog.jsonl
 
-The score is produced by `.env.example`, not by `.env`. `.env` is gitignored,
-so yours is your own - if you have an old one lying around and source it, you
-get your old settings and a different number. That is the single most common
-cause of "I can't reproduce this".
+The tuned configuration is compiled into `starter/config.py`, so a fresh clone
+needs no environment set up at all. What this checks is that nothing in your
+shell is *overriding* it: an exported variable still wins over the shipped
+default, so a stale `.env` sourced out of habit is now the most likely reason
+your number differs from ours.
 """
 
 from __future__ import annotations
@@ -20,8 +21,9 @@ import os
 import subprocess
 from pathlib import Path
 
-# Settings that .env.example sets deliberately and that materially move the
-# score. Value is what the winning configuration expects.
+# Settings that materially move the score. The value is what
+# starter/config.py ships; this table exists so the diagnostic fails loudly if
+# the two ever drift apart.
 EXPECTED = {
     "TECHJAM_RERANK_ENABLED": "true",
     "TECHJAM_VECTOR_ENABLED": "true",
@@ -120,35 +122,40 @@ def main() -> None:
             problems.append("catalog differs from the one the index was built on")
 
     # 3. effective configuration -------------------------------------------
-    print("\n[3] effective environment (what your shell actually has)")
-    example = parse_env_file(Path(".env.example"))
-    unset, wrong = [], []
-    for key, want in EXPECTED.items():
-        have = os.getenv(key)
-        if have is None:
-            unset.append(key)
-        elif have.strip().lower() != want.lower():
-            wrong.append((key, have, want))
-    if not unset and not wrong:
-        print(f"  {OK} all {len(EXPECTED)} score-critical settings match .env.example")
-    for key, have, want in wrong:
-        print(f"  {BAD} {key}={have}   expected {want}")
-        problems.append(f"{key} is {have}, expected {want}")
-    if unset:
-        print(f"  {BAD} {len(unset)} setting(s) not exported at all: {', '.join(unset[:6])}")
-        print("         you probably sourced .env (yours) instead of .env.example (ours)")
-        print("         run:  set -a; source .env.example; export OPENAI_API_KEY=...; set +a")
-        problems.append("score-critical settings are unset")
+    print("\n[3] effective configuration (shipped defaults + your shell)")
+    from starter.config import DEFAULTS, getenv
 
-    if Path(".env").exists():
-        own = parse_env_file(Path(".env"))
-        drift = [
-            k for k, v in own.items()
-            if k in EXPECTED and v.strip().lower() != EXPECTED[k].lower()
-        ]
-        if drift:
-            print(f"  {WARN} your .env disagrees with .env.example on: {', '.join(drift[:6])}")
-            print("         .env is gitignored and is NOT the reference configuration")
+    drifted = [
+        (key, DEFAULTS.get(key), want)
+        for key, want in EXPECTED.items()
+        if DEFAULTS.get(key, "").lower() != want.lower()
+    ]
+    if drifted:
+        for key, have, want in drifted:
+            print(f"  {BAD} starter/config.py has {key}={have}, this check expects {want}")
+            problems.append(f"config.py and verify_setup disagree on {key}")
+    else:
+        print(f"  {OK} starter/config.py ships all {len(EXPECTED)} score-critical settings")
+
+    overrides = [
+        (key, os.environ[key], getenv(key))
+        for key in sorted(DEFAULTS)
+        if key in os.environ and os.environ[key].strip() != DEFAULTS[key]
+    ]
+    if not overrides:
+        print(f"  {OK} nothing in your shell overrides them")
+    else:
+        print(f"  {BAD} {len(overrides)} setting(s) overridden by your shell:")
+        for key, have, _ in overrides[:8]:
+            print(f"         {key}={have}   shipped default is {DEFAULTS[key]}")
+        print("         an exported variable wins over the shipped default.")
+        print("         unset them (or start a clean shell) to get our number:")
+        print("           env -i PATH=\"$PATH\" HOME=\"$HOME\" OPENAI_API_KEY=... \\")
+        print("             python -m evaluator.local_evaluator --catalog ...")
+        problems.append(f"{len(overrides)} score-critical setting(s) overridden in the shell")
+
+    if not os.getenv("OPENAI_API_KEY"):
+        print(f"  {WARN} OPENAI_API_KEY is not set - the agent runs offline (-0.0002)")
 
     # 4. models -------------------------------------------------------------
     print("\n[4] models (loaded lazily, and failures are silent)")
@@ -184,11 +191,12 @@ def main() -> None:
             print(f"  - {item}")
     else:
         print("Setup matches. Expected on this configuration:")
-        print("  public   0.914524   Hit@10 0.990  MRR 0.901415  MTTC 3.545")
-        print("  held out 0.876643   (data/synthetic_pop.jsonl)")
+        print("  public   0.914274   Hit@10 0.990  MRR 0.900581  MTTC 3.545")
+        print("  held out 0.880493   (data/synthetic_pop.jsonl)")
         print("\nStill different? The remaining causes are library versions")
         print("(sentence-transformers / torch change cross-encoder output slightly)")
-        print("and OPENAI_ENABLED - the LLM is stochastic, so run it off to compare.")
+        print("and the LLM being stochastic - run OPENAI_ENABLED=false to compare")
+        print("two deterministic runs.")
     print("=" * 66)
 
 

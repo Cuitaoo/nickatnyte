@@ -23,9 +23,9 @@ surviving pool gets too small, rather than filtering down to nothing.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any, Callable
+from starter import config
 
 HARD = "hard"
 SOFT = "soft"
@@ -69,7 +69,7 @@ def staged_filter_enabled() -> bool:
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
+    value = config.getenv(name)
     if value is None:
         return default
     return value.strip().lower() not in {"0", "false", "no", "off", ""}
@@ -77,7 +77,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     try:
-        parsed = int(os.getenv(name, str(default)))
+        parsed = int(config.getenv(name, str(default)))
     except ValueError:
         parsed = default
     return max(minimum, min(maximum, parsed))
@@ -94,7 +94,7 @@ def min_filter_confidence() -> float:
     the precisely checkable ones: category, budget, brand, material, colour.
     """
     try:
-        parsed = float(os.getenv("TECHJAM_STAGED_FILTER_MIN_CONFIDENCE", "0.75"))
+        parsed = float(config.getenv("TECHJAM_STAGED_FILTER_MIN_CONFIDENCE", "0.75"))
     except ValueError:
         parsed = 0.75
     return max(0.0, min(1.0, parsed))

@@ -11,7 +11,6 @@ reranker.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
@@ -19,6 +18,7 @@ from pydantic import BaseModel, ConfigDict
 
 from starter.retrieval import RankedCandidate
 from starter.state import ShoppingState
+from starter import config
 
 
 DEFAULT_LIMIT = 20
@@ -58,28 +58,28 @@ class CandidateReranker:
 
     @classmethod
     def from_environment(cls) -> "CandidateReranker | None":
-        enabled = os.getenv("OPENAI_ENABLED", "true").strip().lower()
+        enabled = config.getenv("OPENAI_ENABLED", "true").strip().lower()
         if enabled in {"0", "false", "no", "off"}:
             return None
         # Off by default: reranking doubles the per-turn API calls, so it must
         # be a deliberate opt-in (see the submission-posture section of the
         # README and docs/evaluations/fable-model-comparison.md).
-        rerank_enabled = os.getenv("OPENAI_RERANK_ENABLED", "false").strip().lower()
+        rerank_enabled = config.getenv("OPENAI_RERANK_ENABLED", "false").strip().lower()
         if rerank_enabled not in {"1", "true", "yes", "on"}:
             return None
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        api_key = config.getenv("OPENAI_API_KEY", "").strip()
         if not api_key:
             return None
         from langchain_openai import ChatOpenAI
 
         from starter.llm_agent import _bounded_float, _bounded_int
 
-        model_name = os.getenv("OPENAI_MODEL", "gpt-5.6-luna").strip()
+        model_name = config.getenv("OPENAI_MODEL", "gpt-5.6-luna").strip()
         timeout = _bounded_float(
-            os.getenv("OPENAI_TIMEOUT_SECONDS", "20"), minimum=1.0, maximum=60.0
+            config.getenv("OPENAI_TIMEOUT_SECONDS", "20"), minimum=1.0, maximum=60.0
         )
         max_retries = _bounded_int(
-            os.getenv("OPENAI_MAX_RETRIES", "1"), minimum=0, maximum=3
+            config.getenv("OPENAI_MAX_RETRIES", "1"), minimum=0, maximum=3
         )
         model = ChatOpenAI(
             api_key=api_key,

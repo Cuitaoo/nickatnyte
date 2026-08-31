@@ -6,7 +6,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-import os
 
 from starter.state import (
     ALLOWED_PREFERENCE_ATTRIBUTES,
@@ -16,6 +15,7 @@ from starter.state import (
     StateUpdateType,
 )
 from starter.query_expansion import query_expansion_enabled, looks_like_scenario_query
+from starter import config
 
 
 SPACE_RE = re.compile(r"\s+")
@@ -239,7 +239,7 @@ def _evidence_source(
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
+    value = config.getenv(name)
     if value is None:
         return default
     return value.strip().lower() not in {"0", "false", "no", "off", ""}

@@ -215,13 +215,21 @@ class RetrievalTest(unittest.TestCase):
         self.assertLess(results.index("HIKING_PACK"), results.index("COTTON_SHIRT"))
 
     def test_override_message_does_not_weaken_updated_preferences(self) -> None:
+        # IDF damping scales every constraint value by how common it is, and
+        # the flag is read when the retriever is built - so this needs its own
+        # retriever to compare against the undamped constant. That the override
+        # does not weaken the boost is the point here; the damping has its own
+        # tests below.
+        with patch.dict("os.environ", {"TECHJAM_IDF_WEIGHTING": "false"}):
+            retriever = CatalogRetriever(self.catalog_path)
+        self.addCleanup(retriever.close)
         state = replace(
             ShoppingState.new("s", {}),
             category="boots",
             preferences={"material": ("leather",)},
         )
 
-        result = self.retriever.search(
+        result = retriever.search(
             state,
             "Actually, ignore my earlier preference. What I need is leather.",
             3,

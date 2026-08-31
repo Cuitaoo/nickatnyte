@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
 import sqlite3
 from collections import Counter, defaultdict
@@ -34,6 +33,7 @@ from starter.vector_index import (
     category_query_embedding_text,
     feature_query_embedding_text,
 )
+from starter import config
 
 
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
@@ -191,7 +191,7 @@ def _has_browsing_signal(message: str) -> bool:
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
+    value = config.getenv(name)
     if value is None:
         return default
     return value.strip().lower() not in {"0", "false", "no", "off", ""}
@@ -199,7 +199,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     try:
-        parsed = int(os.getenv(name, str(default)))
+        parsed = int(config.getenv(name, str(default)))
     except ValueError:
         parsed = default
     return max(minimum, min(maximum, parsed))
@@ -207,7 +207,7 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
 
 def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
     try:
-        parsed = float(os.getenv(name, str(default)))
+        parsed = float(config.getenv(name, str(default)))
     except ValueError:
         parsed = default
     return max(minimum, min(maximum, parsed))
@@ -600,7 +600,7 @@ class CatalogRetriever:
             "TECHJAM_VECTOR_MIN_RARE_TERMS", 1, 1, 8
         )
         self.vector_policy = (
-            os.getenv("TECHJAM_VECTOR_POLICY", "adaptive").strip().lower()
+            config.getenv("TECHJAM_VECTOR_POLICY", "adaptive").strip().lower()
             or "adaptive"
         )
         self.vector_low_confidence_candidate_limit = _env_int(
@@ -689,7 +689,7 @@ class CatalogRetriever:
     def _load_vector_index(self) -> None:
         if not _env_bool("TECHJAM_VECTOR_ENABLED", False):
             return
-        index_dir = os.getenv("TECHJAM_VECTOR_INDEX_DIR", "data/vector_index")
+        index_dir = config.getenv("TECHJAM_VECTOR_INDEX_DIR", "data/vector_index")
         self.vector_index = VectorCatalogIndex.load_if_available(
             self.catalog_path, index_dir
         )

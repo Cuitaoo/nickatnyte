@@ -19,8 +19,8 @@ the most load-bearing reason.
 
 from __future__ import annotations
 
-import os
 from typing import Any
+from starter import config
 
 PREFIX = "Recommended because it matches"
 PROFILE_CLAUSE = "your profile's {tags} preference"
@@ -32,7 +32,7 @@ def explanations_enabled() -> bool:
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
+    value = config.getenv(name)
     if value is None:
         return default
     return value.strip().lower() not in {"0", "false", "no", "off", ""}

@@ -9,46 +9,31 @@ ranking has not separated.
 | | Technical score | Hit@10 | MRR | MTTC |
 | --- | ---: | ---: | ---: | ---: |
 | Public set, 200 sessions | **0.914274** | 0.990 | 0.900581 | 3.545 |
-| Held-out set, 200 unseen targets | **0.876643** | 0.955 | 0.852476 | 3.830 |
+| Held-out set, 200 unseen targets | **0.880493** | 0.960 | 0.854976 | 3.800 |
 
-Run-to-run variation with the model enabled is about ±0.0002; treat smaller
-differences as noise.
+Run-to-run variation with the model enabled is about ±0.0002 on the public set
+and ±0.004 on the held-out set; treat smaller differences as noise.
 
 ---
 
 ## Quick start
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt          # core agent
-pip install -r requirements-vector.txt   # vector recall + cross-encoder
-
-# the winning configuration lives in .env.example, not .env
-set -a
-source .env.example
-export OPENAI_API_KEY=sk-...             # only if running with the model enabled
-set +a
-
-python -m evaluator.local_evaluator \
-  --catalog data/catalog.jsonl \
-  --dataset data/public_set.jsonl
+pip install -r requirements.txt -r requirements-vector.txt
 ```
 
-Before reporting a number that disagrees with the table above, run:
+One command runs the agent in the official harness:
+
+```bash
+OPENAI_API_KEY=sk-... python -m evaluator.local_evaluator --catalog data/catalog.jsonl --dataset data/public_set.jsonl
+```
+
+**No environment setup is required.** Drop the API key and it still runs — see
+*Network access* below. If your number disagrees with the table above:
 
 ```bash
 PYTHONPATH=. python tools/verify_setup.py --catalog data/catalog.jsonl
 ```
-
-It checks the commit, the catalogue hash against the prebuilt vector index, all
-sixteen score-critical settings, and whether the models actually loaded. It
-names each problem rather than leaving you to guess.
-
-**The most common reproduction failure is configuration, not code.** `.env` is
-gitignored, so it never reaches a fresh clone; `.env.example` carries the
-measured configuration. A shell that sources neither scores **0.857069**
-instead of 0.914274 — a gap of 0.057 — because every feature falls back to its
-code default.
 
 ## Requirements
 
@@ -59,6 +44,29 @@ code default.
   organizer and deliberately not vendored here
 - `data/vector_index/` — prebuilt embeddings, committed, validated by a sha256
   of the catalogue they were built from
+
+## Configuration is in the code, not in a `.env`
+
+Every tuned constant lives in [`starter/config.py`](starter/config.py) as a
+single table of 85 named settings. The only thing that comes from the
+environment is `OPENAI_API_KEY`.
+
+**This was a bug fix, not a preference.** Our configuration used to live in a
+`.env` file. `.env` is gitignored, so it never reached a fresh clone, and
+teammates checking out the branch measured **0.857069** instead of 0.914274 — a
+gap of 0.057 — because every feature silently fell back to a code default that
+was off. Nothing in the repository was wrong; the repository just wasn't the
+thing being measured. Compiling the configuration in makes the checked-out
+commit and the measured system the same object, which is what the
+reproducibility rules ask for.
+
+Precedence is `os.environ` → `DEFAULTS` → the call site's own default, so an
+exported variable still wins. That is how every ablation below works, and how
+`tests/` pins a value without touching the file. Two tests keep it honest: one
+fails if any `starter/` module reads `os.getenv` directly and bypasses the
+table, another fails if the table carries a default nothing reads.
+
+`.env.example` is now a stub holding the API key and a pointer here.
 
 ## Entry point
 
@@ -82,12 +90,34 @@ decision, distilled profile deltas — are exposed as separate accessors
 (`last_decision`, `last_parse_decision`, `profile_updates`) and never appear in
 the payload.
 
+### Output rules
+
+All five are checked against a real 200-session run rather than asserted:
+
+```bash
+PYTHONPATH=. python tools/check_output_contract.py --catalog data/catalog.jsonl
+```
+
+It wraps the real `Agent` in a validating proxy, drives it through the
+unmodified evaluator loop, and exits non-zero on any violation. Last run:
+**200 sessions, 709 turns, no violations.**
+
+| rule | how it holds |
+| --- | --- |
+| `message` is a string | always constructed from a template or a deterministic explanation |
+| `ask_attribute` is an allowed attribute or `null` | drawn from the ten-value vocabulary; `null` when recommending without asking |
+| `recommendations` ordered best to worst | emitted in fused-score order; every later stage permutes rather than re-sorts |
+| only the first 10 valid unique `parent_asin` are scored | we return at most 10, deduplicated, all catalogue-valid |
+| `usage` reports non-negative token counts | integers, zero on the offline path |
+
 ---
 
 ## Network access and offline fallback
 
-**The agent runs fully offline.** Set `OPENAI_ENABLED=false` and it uses the
-deterministic parser throughout, with no network calls at any point.
+**The agent does not require live credentials.** With `OPENAI_API_KEY` unset it
+uses the deterministic parser throughout and makes no network calls at any
+point. Set `OPENAI_ENABLED=false` to force that path even when a key is
+present.
 
 With the model enabled, network failure is handled rather than fatal. Every LLM
 path catches its own exceptions and falls back to the deterministic parser, and
@@ -128,13 +158,28 @@ Measured on an Apple Silicon laptop, CPU only.
 max 5.4 s, at roughly 1,400 tokens per call.
 
 **Tokens.** The ambiguity gate routes only turns the deterministic parser
-cannot read confidently — about **32 of 800 turns**. A full 200-session run
-costs **~51,000 tokens** (roughly 255 per session). Without the gate the same
-run cost **1,027,203 tokens**, a 95% reduction for a score that does not move.
+cannot read confidently — about 32 of 800 turns. Measured on the headline run:
 
-**Cost.** We report token counts rather than a currency figure, since the rate
-depends on the model tier the organizer scores under. At ~51k tokens per
-200 sessions, an 800-session hidden set would cost roughly **200k tokens**.
+| | prompt | completion | total | per session |
+| --- | ---: | ---: | ---: | ---: |
+| Gated (shipped) | 42,430 | 7,922 | **50,352** | 252 |
+| Every turn routed | 925,949 | 101,254 | 1,027,203 | 5,136 |
+
+A **95% reduction** for a score that does not move.
+
+**Cost.** We do not know the rate the organizer will score under, so the
+estimate is given as arithmetic you can re-run with your own numbers. The full
+800-session hidden set is 4× the table above: roughly **170k prompt + 32k
+completion tokens**.
+
+| reference rate (input / output per 1M) | 200 sessions | 800 sessions |
+| --- | ---: | ---: |
+| $0.15 / $0.60 | $0.011 | $0.044 |
+| $1.25 / $10.00 | $0.132 | $0.529 |
+
+**Under one US dollar to score the entire hidden set** at either rate. Ungated,
+the same run would cost roughly $8.68 at the higher rate — the gate is the
+difference between a rounding error and a real bill.
 
 ---
 
@@ -155,9 +200,9 @@ git diff 2a6cc8e -- evaluator/     # no output
 grep -rn "import evaluator" starter/     # no output
 ```
 
-**No secrets.** `.env` is gitignored and never committed. One `.env` file is
-tracked — `docs/evaluations/ct/baseline-0.851142.env` — and contains settings
-only:
+**No secrets.** `.env` is gitignored and never committed; `.env.example` ships
+an empty key. A test fails if any value in `starter/config.py` looks like a
+credential.
 
 ```bash
 git ls-files | xargs grep -l "sk-" 2>/dev/null    # no output
@@ -172,15 +217,28 @@ network dependency is the OpenAI API, which is optional — see *Network access*
 above. Both local models load with `local_files_only=True`.
 
 **Output contract.** `respond()` returns exactly `message`, `ask_attribute`,
-`recommendations`, `usage`. Two tests pin the key set, so widening it fails the
-suite rather than reaching a submission.
+`recommendations`, `usage`. Three tests pin the key set, so widening it fails
+the suite rather than reaching a submission.
 
-## Environment variables that change the score
+### File layout against the recommended one
 
-`.env.example` is the reference configuration and carries a comment and
-measurement for every setting. The ones that materially move the number:
+The rules suggest `submission/{agent.py, requirements.txt, README.md, src/}`.
+Ours maps onto it directly:
 
-| variable | value | effect if unset |
+| recommended | here |
+| --- | --- |
+| `agent.py` | `starter/agent.py` — exports `Agent` |
+| `src/` | `starter/` — helper modules |
+| `requirements.txt` | `requirements.txt` + `requirements-vector.txt` |
+| `README.md` | this file |
+
+## Settings that most change the score
+
+All of these ship at the value shown in `starter/config.py`. The column on the
+right is what you get by exporting the opposite — that is how each was
+measured.
+
+| setting | ships as | effect if overridden |
 | --- | --- | --- |
 | `TECHJAM_RERANK_ENABLED` | `true` | no semantic reranking |
 | `TECHJAM_VECTOR_ENABLED` | `true` | no vector recall |
@@ -193,7 +251,7 @@ measurement for every setting. The ones that materially move the number:
 | `TECHJAM_CONFIDENCE_CONTROLLER` | `true` | deferral reverts to turn count |
 | `OPENAI_ENABLED` | `true` | deterministic parsing only (valid, −0.0002) |
 
-Sourcing none of them scores 0.857069 against 0.914274.
+Overriding all of them back to the old code defaults scores 0.857069.
 
 ## How the held-out set was built
 
@@ -360,7 +418,8 @@ built, measured on both sets, and are switched off; see the table below.
 ## What we built and did not keep
 
 Every feature was measured on both sets and kept only if it earned its place.
-These ship switchable and off, each carrying its measurement in `.env.example`:
+These ship switchable and off, each carrying its measurement as a comment in
+`starter/config.py`:
 
 | rejected | public | held out | why |
 | --- | ---: | ---: | --- |
@@ -378,7 +437,9 @@ These ship switchable and off, each carrying its measurement in `.env.example`:
 
 ## Verifying the numbers in this README
 
-Every figure above is reproducible. The commands, in order of what they check:
+Every figure above is reproducible. Run these in a clean shell — an exported
+variable overrides the shipped configuration, which is the one way to get a
+different number from the same commit.
 
 ```bash
 # 1. setup is correct before anything else
@@ -388,7 +449,7 @@ PYTHONPATH=. python tools/verify_setup.py --catalog data/catalog.jsonl
 python -m evaluator.local_evaluator \
   --catalog data/catalog.jsonl --dataset data/public_set.jsonl
 
-# 3. the held-out score                   -> 0.876643
+# 3. the held-out score                   -> 0.880493
 python -m evaluator.local_evaluator \
   --catalog data/catalog.jsonl --dataset data/synthetic_pop.jsonl
 
@@ -405,8 +466,11 @@ TECHJAM_RATING_COUNT_COEF=0.000335 python -m evaluator.local_evaluator \
 OPENAI_ENABLED=false python -m evaluator.local_evaluator \
   --catalog data/catalog.jsonl --dataset data/public_set.jsonl
 
-# 7. the test suite, in a clean shell
-env -i PATH="$PATH" HOME="$HOME" python -m unittest discover -s tests
+# 7. every output rule, over a real 200-session run
+PYTHONPATH=. python tools/check_output_contract.py --catalog data/catalog.jsonl
+
+# 8. the test suite
+python -m unittest discover -s tests
 ```
 
 The score decomposes as `0.50 x Hit@10 + 0.30 x MRR + 0.20 x Efficiency`, where
@@ -416,14 +480,15 @@ The score decomposes as `0.50 x Hit@10 + 0.30 x MRR + 0.20 x Efficiency`, where
 0.50 x 0.990 + 0.30 x 0.900581 + 0.20 x 0.7455 = 0.914274
 ```
 
-Each rejected feature in the table below is reproducible the same way by
-setting its variable from `.env.example`.
+Each rejected feature in the table above is reproducible the same way by
+exporting its setting.
 
 ## Repository layout
 
 ```
 starter/            the agent
   agent.py            entry point, exports Agent
+  config.py           the shipped configuration, 85 settings
   retrieval.py        routes, fusion, scoring, guardrails
   confidence.py       separation signals and strategy selection
   constraints.py      constraint strength and staged filtering
@@ -435,10 +500,11 @@ starter/            the agent
   llm_agent.py        gated LLM state interpretation
 evaluator/          official harness, unmodified (see Submission compliance)
 tools/
-  verify_setup.py     reproducibility diagnostic
-  build_synthetic_set.py  held-out set builder
+  verify_setup.py           reproducibility diagnostic
+  check_output_contract.py  output-rule checker
+  build_synthetic_set.py    held-out set builder
 docs/evaluations/ct/  measurement log
-tests/              338 tests
+tests/              343 tests
 ```
 
 ## A demonstrated session
@@ -487,5 +553,4 @@ before it merged.
 python -m unittest discover -s tests
 ```
 
-338 tests. Run them in a clean shell — the suite exercises defaults, so a shell
-with the configuration sourced will report failures that are not real.
+343 tests, no environment setup required.
