@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1920"
+     height="1080"
+     viewBox="0 0 1920 1080"
+     role="img"
+     aria-labelledby="title description">
+  <title id="title">Hybrid retrieval and ranking formula</title>
+  <desc id="description">
+    The current TechJam retrieval pipeline: multi-route lexical and vector recall,
+    weighted reciprocal-rank fusion, evidence boosts, cross-encoder reranking,
+    intent-specific filtering, audience guardrails, and confidence-calibrated output.
+  </desc>
+
+  <defs>
+    <marker id="arrowhead" markerWidth="12" markerHeight="12"
+            refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 12 6 L 0 12 Z" fill="#475569"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="6" stdDeviation="7"
+                    flood-color="#0F172A" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+
+  <!-- Input -->
+  <g filter="url(#shadow)">
+    <rect x="560" y="28" width="800" height="96" rx="8"
+          fill="#EAF2FF" stroke="#2563EB" stroke-width="3"/>
+  </g>
+  <text x="960" y="68" text-anchor="middle"
+        font-family="Inter, Arial, sans-serif" font-size="29" font-weight="700" fill="#102A43">
+    Conversation State
+  </text>
+  <text x="960" y="101" text-anchor="middle"
+        font-family="Inter, Arial, sans-serif" font-size="20" fill="#334E68">
+    Category · Preferences · Removed constraints · Latest message · User profile
+  </text>
+
+  <!-- Stage label -->
+  <rect x="60" y="151" width="282" height="39" rx="8" fill="#D97706"/>
+  <text x="201" y="177" text-anchor="middle"
+        font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700" fill="#FFFFFF">
+    1 · CANDIDATE RECALL
+  </text>
+
+  <!-- Input split connectors -->
+  <g fill="none" stroke="#475569" stroke-width="4" stroke-linecap="round">
+    <path d="M 960 124 L 960 158 L 490 158 L 490 196" marker-end="url(#arrowhead)"/>
+    <path d="M 960 158 L 1430 158 L 1430 196" marker-end="url(#arrowhead)"/>
+  </g>
+
+  <!-- Lexical recall -->
+  <g filter="url(#shadow)">
+    <rect x="190" y="200" width="600" height="178" rx="8"
+          fill="#FFF4D6" stroke="#D97706" stroke-width="3"/>
+  </g>
+  <circle cx="236" cy="245" r="22" fill="#D97706"/>
+  <text x="236" y="253" text-anchor="middle"
+        font-family="Inter, Arial, sans-serif" font-size="23" font-weight="700" fill="#FFFFFF">A</text>
+  <text x="276" y="253" font-family="Inter, Arial, sans-serif"
+        font-size="28" font-weight="700" fill="#422006">SQLite FTS5 / BM25</text>
+  <text x="232" y="300" font-family="Inter, Arial, sans-serif" font-size="22" fill="#5B3710">
+    <tspan x="232">Category · Features · Exact phrases · Identifiers</tspan>
+    <tspan x="232" dy="34">Attributes · Relaxed terms · Latest message</tspan>
+    <tspan x="232" dy="34">Up to 150 candidates per lexical route</tspan>
+  </text>
+
+  <!-- Vector recall -->
+  <g filter="url(#shadow)">
+    <rect x="1130" y="200" width="600" height="178" rx="8"
+          fill="#FFF4D6" stroke="#D97706" stroke-width="3"/>
+  </g>
+  <circle cx="1176" cy="245" r="22" fill="#D97706"/>
+  <text x="1176" y="253" text-anchor="middle"
+        font-family="Inter, Arial, sans-serif" font-size="23" font-weight="700" fill="#FFFFFF">B</text>
+  <text x="1216" y="253" font-family="Inter, Arial, sans-serif"
+        font-size="28" font-weight="700" fill="#422006">Adaptive Vector Recall</text>
+  <text x="1172" y="300" font-family="Inter, Arial, sans-serif" font-size="22" fill="#5B3710">
+    <tspan x="1172">Feature-query embedding · Top 30 ANN</tspan>
+    <tspan x="1172" dy="34">Cosine similarity ≥ 0.45</tspan>
+    <tspan x="1172" dy="34">Recall only: cosine is not added to the score</tspan>
+  </text>
+
+  <!-- Recall merge connectors -->
+  <g fill="none" stroke="#475569" stroke-width="4" stroke-linecap="round">
+    <path d="M 490 378 L 490 406 L 780 406 L 780 426" marker-end="url(#arrowhead)"/>
+    <path d="M 1430 378 L 1430 406 L 1140 406 L 1140 426" marker-end="url(#arrowhead)"/>
+  </g>
+
+  <!-- Candidate union -->
+  <g filter="url(#shadow)">
+    <rect x="660" y="430" width="600" height="82" rx="8"
+          fill="#FFFAEB" stroke="#D97706" stroke-width="3"/>
+  </g>
+  <text x="960" y="466" text-anchor="middle"
+        font-family="Inter, Arial, sans-serif" font-size="27" font-weight="700" fill="#422006">
+    Candidate Union
+  </text>
+  <text x="960" y="494" text-anchor="middle"
+        font-family="Inter, Arial, sans-serif" font-size="21" fill="#5B3710">
+    Deduplicated pool · Maximum 500 products
+  </text>
+
+  <!-- Stage 2 label -->
+  <rect x="60" y="538" width="288" height="39" rx="8" fill="#16803C"/>
+  <text x="204" y="564" text-anchor="middle"
+        font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700" fill="#FFFFFF">
+    2 · RETRIEVAL SCORING
+  </text>
+
+  <!-- Union to formula -->
+  <path d="M 960 512 L 960 588" fill="none" stroke="#475569" stroke-width="4"
+        stroke-linecap="round" marker-end="url(#arrowhead)"/>
+
+  <!-- Retrieval formula -->
+  <g filter="url(#shadow)">
+    <rect x="60" y="590" width="1260" height="274" rx="8"
+          fill="#E8F7EE" stroke="#16803C" stroke-width="4"/>
+  </g>
+  <text x="100" y="626" font-family="Inter, Arial, sans-serif"
+        font-size="27" font-weight="700" fill="#12351F">Weighted Reciprocal-Rank Fusion</text>
+  <text x="100" y="666" font-family="Inter, Arial, sans-serif"
+        font-size="25" font-weight="600" fill="#12351F">
+    S<tspan baseline-shift="sub" font-size="18">RRF</tspan><tspan baseline-shift="baseline">(d) = Σ</tspan><tspan baseline-shift="sub" font-size="18">r</tspan><tspan baseline-shift="baseline"> w</tspan><tspan baseline-shift="sub" font-size="18">r</tspan><tspan baseline-shift="baseline"> / (5.049 + rank</tspan><tspan baseline-shift="sub" font-size="18">r</tspan><tspan baseline-shift="baseline">(d))</tspan>
+  </text>
+  <text x="100" y="700" font-family="Inter, Arial, sans-serif" font-size="20" fill="#2D5A3B">
+    Category 0.783 · Feature 1.258 · Exact phrase / ID 1.714 · Attribute 2.127 · Relaxed 1.245 · Latest 2.484
+  </text>
+  <line x1="100" y1="720" x2="1280" y2="720" stroke="#86C99B" stroke-width="2"/>
+  <text x="100" y="756" font-family="Inter, Arial, sans-serif"
+        font-size="27" font-weight="700" fill="#12351F">Base Product Score</text>
+  <text x="100" y="790" font-family="Inter, Arial, sans-serif" font-size="21" fill="#173F25">
+    <tspan x="100">S</tspan><tspan baseline-shift="sub" font-size="16">base</tspan><tspan baseline-shift="baseline">(d) = S</tspan><tspan baseline-shift="sub" font-size="16">RRF</tspan><tspan baseline-shift="baseline"> + 0.0846 × route agreement + 1.0586 × category + 2.1756 × phrase + 6.0 × identifier</tspan>
+    <tspan x="100" dy="29">+ 1.3022 × Σ IDF(value) × preference match − 2.3928 × Σ removed-preference violation</tspan>
+    <tspan x="100" dy="29">+ 0.00172 × min(rating, 5) + 0.030 × ln(1 + reviews) + profile tie-breaker ≤ 0.03</tspan>
+  </text>
+
+  <!-- Formula to cross encoder -->
+  <path d="M 1320 727 L 1390 727" fill="none" stroke="#475569" stroke-width="4"
+        stroke-linecap="round" marker-end="url(#arrowhead)"/>
+
+  <!-- Cross encoder -->
+  <g filter="url(#shadow)">
+    <rect x="1400" y="610" width="460" height="234" rx="8"
+          fill="#EDE9FE" stroke="#7C3AED" stroke-width="4"/>
+  </g>
+  <circle cx="1447" cy="656" r="22" fill="#7C3AED"/>
+  <text x="1447" y="664" text-anchor="middle"
+        font-family="Inter, Arial, sans-serif" font-size="23" font-weight="700" fill="#FFFFFF">3</text>
+  <text x="1487" y="664" font-family="Inter, Arial, sans-serif"
+        font-size="27" font-weight="700" fill="#2E1065">Cross-Encoder</text>
+  <text x="1440" y="713" font-family="Inter, Arial, sans-serif" font-size="21" fill="#3B1A75">
+    <tspan x="1440">MiniLM reranks the Top 10</tspan>
+    <tspan x="1440" dy="38">S</tspan><tspan baseline-shift="sub" font-size="16">neural</tspan><tspan baseline-shift="baseline">(d) = S</tspan><tspan baseline-shift="sub" font-size="16">base</tspan><tspan baseline-shift="baseline">(d)</tspan>
+    <tspan x="1440" dy="36">+ 0.65 × MinMax[CE(query, d)]</tspan>
+  </text>
+
+  <!-- Cross encoder to business rules -->
+  <path d="M 1630 844 L 1630 884 L 360 884 L 360 910" fill="none"
+        stroke="#475569" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"
+        marker-end="url(#arrowhead)"/>
+
+  <!-- Stage 3 label -->
+  <rect x="60" y="874" width="306" height="39" rx="8" fill="#D94A4A"/>
+  <text x="213" y="900" text-anchor="middle"
+        font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700" fill="#FFFFFF">
+    3 · BUSINESS GUARDRAILS
+  </text>
+
+  <!-- Intent rules -->
+  <g filter="url(#shadow)">
+    <rect x="60" y="918" width="600" height="138" rx="8"
+          fill="#FDECEC" stroke="#D94A4A" stroke-width="3"/>
+  </g>
+  <text x="96" y="956" font-family="Inter, Arial, sans-serif"
+        font-size="25" font-weight="700" fill="#481A1A">Intent-Specific Rules</text>
+  <text x="96" y="985" font-family="Inter, Arial, sans-serif" font-size="20" fill="#642626">
+    <tspan x="96">Buying: filter proven hard-constraint violations</tspan>
+    <tspan x="96" dy="27">Browsing: preserve wider semantic coverage</tspan>
+    <tspan x="96" dy="27">Safety: relax filtering if fewer than 40 survive</tspan>
+  </text>
+
+  <!-- Intent to audience -->
+  <path d="M 660 987 L 700 987" fill="none" stroke="#475569" stroke-width="4"
+        stroke-linecap="round" marker-end="url(#arrowhead)"/>
+
+  <!-- Audience guardrail -->
+  <g filter="url(#shadow)">
+    <rect x="710" y="918" width="520" height="138" rx="8"
+          fill="#FDECEC" stroke="#D94A4A" stroke-width="3"/>
+  </g>
+  <text x="746" y="956" font-family="Inter, Arial, sans-serif"
+        font-size="25" font-weight="700" fill="#481A1A">Audience Guardrail · Top 20</text>
+  <text x="746" y="988" font-family="Inter, Arial, sans-serif" font-size="21" fill="#642626">
+    <tspan x="746">G(d) = (20 − position) / 20</tspan>
+    <tspan x="746" dy="27">− 0.30 × mismatch grade</tspan>
+    <tspan x="746" dy="27">Gender 1.0 · Age band 0.5</tspan>
+  </text>
+
+  <!-- Audience to output -->
+  <path d="M 1230 987 L 1270 987" fill="none" stroke="#475569" stroke-width="4"
+        stroke-linecap="round" marker-end="url(#arrowhead)"/>
+
+  <!-- Confidence depth -->
+  <g filter="url(#shadow)">
+    <rect x="1280" y="900" width="580" height="156" rx="8"
+          fill="#E6F7F5" stroke="#0F766E" stroke-width="4"/>
+  </g>
+  <text x="1316" y="940" font-family="Inter, Arial, sans-serif"
+        font-size="25" font-weight="700" fill="#134E4A">Confidence-Calibrated Output</text>
+  <text x="1316" y="976" font-family="Inter, Arial, sans-serif" font-size="20" fill="#185C57">
+    <tspan x="1316">ρ = (S₁ − S₂) / |S₁|</tspan>
+    <tspan x="1316" dy="29">ρ ≥ 0.30 → Top 10 · ρ ≥ 0.10 → Top 2</tspan>
+    <tspan x="1316" dy="29">Otherwise Top 1 · Turn 5 onward Top 10</tspan>
+  </text>
+</svg>

@@ -15,6 +15,8 @@ from starter.preference_tool import (
     apply_preference_patch,
     parse_preference_fallback,
 )
+from starter.profile_memory import ProfileUpdate
+from starter.query_expansion import ScenarioHypothesis
 from starter.state import ALLOWED_PREFERENCE_ATTRIBUTES, ShoppingState
 
 
@@ -126,6 +128,49 @@ class AgentIntegrationTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             agent.respond("missing", "blue shoes", 1, 10)
 
+    @patch.dict(
+        "os.environ",
+        {
+            "TECHJAM_QUERY_EXPANSION_ENABLED": "true",
+            "TECHJAM_QUERY_EXPANSION_MODE": "recall",
+        },
+    )
+    def test_validated_scenario_is_forwarded_only_to_retrieval(self) -> None:
+        hypothesis = ScenarioHypothesis(
+            scenario_query="reliable portable long battery life",
+            basis="uni",
+            confidence=0.75,
+        )
+
+        class HypothesisInterpreter:
+            def interpret(self, message: str, state: ShoppingState) -> Interpretation:
+                patch_value = PreferencePatch(intent_mode="buying", category="laptop")
+                return Interpretation(
+                    state=apply_preference_patch(state, patch_value),
+                    patch=patch_value,
+                    scenario_hypotheses=(hypothesis,),
+                )
+
+        agent = Agent(self.catalog_path, interpreter=HypothesisInterpreter())
+        self.addCleanup(agent.close)
+        agent.reset("s", {"summary": "", "preference_tags": []})
+
+        with patch.object(
+            agent.retriever, "search", wraps=agent.retriever.search
+        ) as search:
+            agent.respond("s", "I want a good laptop for uni", 1, 10)
+
+        self.assertEqual(
+            search.call_args.kwargs["scenario_hypotheses"], (hypothesis,)
+        )
+        self.assertTrue(
+            {"reliable", "portable", "battery"}.isdisjoint(
+                agent.session_state("s").search_terms
+            )
+        )
+        diagnostic = agent.last_state_update_diagnostic("s")
+        self.assertEqual(diagnostic["scenario_hypotheses"][0]["basis"], "uni")
+
     def test_preferences_persist_across_turns_and_usage_is_per_turn(self) -> None:
         interpreter = QueueInterpreter(
             [
@@ -151,6 +196,90 @@ class AgentIntegrationTest(unittest.TestCase):
         self.assertEqual(agent.session_state("s").prompt_tokens, 23)
         self.assertEqual(agent.session_state("s").completion_tokens, 4)
         self.assertEqual(interpreter.calls, 2)
+
+    def test_explicit_long_term_preference_emits_score_neutral_profile_delta(self) -> None:
+        agent = Agent(self.catalog_path, interpreter=None)
+        self.addCleanup(agent.close)
+        agent.reset("s", {"summary": "", "preference_tags": []})
+
+        response = agent.respond(
+            "s",
+            "I'm looking for jeans, and I usually prefer cotton.",
+            1,
+            10,
+        )
+
+        updates = agent.profile_updates("s")
+        self.assertEqual(len(updates), 1)
+        self.assertEqual(updates[0].category_scope, "jeans")
+        self.assertEqual(updates[0].attribute, "material")
+        self.assertEqual(updates[0].value, "cotton")
+        self.assertEqual(
+            set(response),
+            {"message", "ask_attribute", "recommendations", "usage"},
+        )
+
+    def test_evaluator_style_preference_does_not_emit_profile_delta(self) -> None:
+        agent = Agent(self.catalog_path, interpreter=None)
+        self.addCleanup(agent.close)
+        agent.reset("s", {"summary": "", "preference_tags": []})
+        agent._sessions["s"] = replace(
+            agent.session_state("s"),
+            category="shirts",
+            previous_ask_attribute="material",
+        )
+
+        agent.respond("s", "For that, what matters is: cotton.", 2, 10)
+
+        self.assertEqual(agent.profile_updates("s"), ())
+
+    def test_reset_clears_observed_profile_deltas(self) -> None:
+        agent = Agent(self.catalog_path, interpreter=None)
+        self.addCleanup(agent.close)
+        agent.reset("s", {"summary": "", "preference_tags": []})
+        agent.respond(
+            "s",
+            "I'm looking for jeans, and I usually prefer cotton.",
+            1,
+            10,
+        )
+
+        agent.reset("s", {"summary": "", "preference_tags": []})
+
+        self.assertEqual(agent.profile_updates("s"), ())
+
+    def test_profile_observation_is_response_and_state_neutral(self) -> None:
+        baseline = Agent(self.catalog_path, interpreter=None)
+        observed = Agent(self.catalog_path, interpreter=None)
+        self.addCleanup(baseline.close)
+        self.addCleanup(observed.close)
+        profile = {"summary": "", "preference_tags": []}
+        baseline.reset("baseline", profile)
+        observed.reset("observed", profile)
+        update = ProfileUpdate(
+            category_scope="shirts",
+            attribute="material",
+            value="cotton",
+            confidence=0.90,
+            source_turn=1,
+        )
+
+        with patch("starter.agent.distill_profile_updates", return_value=()):
+            baseline_response = baseline.respond(
+                "baseline", "I'm looking for cotton shirts.", 1, 10
+            )
+        with patch(
+            "starter.agent.distill_profile_updates", return_value=(update,)
+        ):
+            observed_response = observed.respond(
+                "observed", "I'm looking for cotton shirts.", 1, 10
+            )
+
+        self.assertEqual(observed_response, baseline_response)
+        baseline_state = replace(baseline.session_state("baseline"), session_id="same")
+        observed_state = replace(observed.session_state("observed"), session_id="same")
+        self.assertEqual(observed_state, baseline_state)
+        self.assertEqual(observed.profile_updates("observed"), (update,))
 
     def test_ambiguity_gate_bypasses_model_for_direct_clarification(self) -> None:
         interpreter = QueueInterpreter([PreferencePatch()])

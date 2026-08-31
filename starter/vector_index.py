@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from starter.state import ShoppingState
+from starter.query_expansion import ScenarioHypothesis
 
 
 DEFAULT_VECTOR_INDEX_DIR = Path("data/vector_index")
@@ -134,26 +135,13 @@ def full_query_embedding_text(state: ShoppingState, latest_message: str) -> str:
 
 
 def category_query_embedding_text(state: ShoppingState, latest_message: str) -> str:
-    parts: list[str] = []
-    if state.category:
-        parts.append(state.category)
-    parts.extend(state.search_terms)
+    """Return only the explicit product/category signal for title recall."""
 
-    preference_terms = set(
-        _content_terms(
-            value
-            for attribute, values in state.preferences.items()
-            if attribute != "category"
-            for value in values
-        )
-    )
-    latest_terms = [
-        term
-        for term in _content_terms([latest_message], limit=16)
-        if term not in preference_terms
-    ]
-    parts.extend(latest_terms[:8])
-    return " ".join(_dedupe(parts))
+    # Raw-message context, such as a country name or broad shopper goal, must
+    # not leak into this embedding. It belongs either to confirmed state or the
+    # separate, optional scenario-only feature route.
+    del latest_message
+    return str(state.category or "").strip()
 
 
 def feature_query_embedding_text(state: ShoppingState, latest_message: str) -> str:
@@ -206,7 +194,9 @@ def _dedupe(values: list[str]) -> list[str]:
 
 
 def _route_allowed(route: str, allowed_routes: set[str] | None) -> bool:
-    return allowed_routes is None or route in allowed_routes
+    if allowed_routes is None or route in allowed_routes:
+        return True
+    return route.startswith("vector_scenario_") and "vector_scenario" in allowed_routes
 
 
 class VectorCatalogIndex:
@@ -268,11 +258,16 @@ class VectorCatalogIndex:
         latest_message: str,
         top_k: int,
         allowed_routes: set[str] | None = None,
+        scenario_hypotheses: tuple[ScenarioHypothesis, ...] = (),
     ) -> dict[str, list[str]]:
         return {
             route: [product_id for product_id, _score in rows]
             for route, rows in self.search_routes_with_scores(
-                state, latest_message, top_k, allowed_routes
+                state,
+                latest_message,
+                top_k,
+                allowed_routes,
+                scenario_hypotheses=scenario_hypotheses,
             ).items()
         }
 
@@ -282,6 +277,7 @@ class VectorCatalogIndex:
         latest_message: str,
         top_k: int,
         allowed_routes: set[str] | None = None,
+        scenario_hypotheses: tuple[ScenarioHypothesis, ...] = (),
     ) -> dict[str, list[tuple[str, float]]]:
         queries: list[tuple[str, str, Any]] = []
         category_query = category_query_embedding_text(state, latest_message)
@@ -310,6 +306,18 @@ class VectorCatalogIndex:
                     self.embeddings,
                 )
             )
+        scenario_matrix = self.feature_embeddings
+        if scenario_matrix is None:
+            scenario_matrix = self.embeddings
+        if scenario_matrix is not None and _route_allowed(
+            "vector_scenario", allowed_routes
+        ):
+            for index, hypothesis in enumerate(scenario_hypotheses, start=1):
+                scenario_query = hypothesis.scenario_query.strip()
+                if scenario_query:
+                    queries.append(
+                        (f"vector_scenario_{index}", scenario_query, scenario_matrix)
+                    )
         if not queries:
             return {}
 

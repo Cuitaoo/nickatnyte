@@ -8,6 +8,7 @@ results.json
 data/catalog.jsonl
 data/vector_index/
 data/releases/
+data/long_term_user_profile_updates.json
 # Organizer-only code, private evaluation data, manifests, and build reports.
 organizer/
 secure/

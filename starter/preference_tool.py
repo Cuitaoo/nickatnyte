@@ -15,6 +15,7 @@ from starter.state import (
     ShoppingState,
     StateUpdateType,
 )
+from starter.query_expansion import query_expansion_enabled, looks_like_scenario_query
 
 
 SPACE_RE = re.compile(r"\s+")
@@ -68,8 +69,13 @@ UNNAMED_EARLIER_PREFERENCE_RE = re.compile(
     re.IGNORECASE,
 )
 EXACT_IDENTIFIER_RE = re.compile(
-    r"\b(?:item\s+model\s+number|model\s+(?:number|no)|style\s+(?:number|no)|"
-    r"part\s+(?:number|no)|mpn|sku)\s*[:#-]?\s*[a-z0-9][a-z0-9._/-]{2,}",
+    r"\b(?:"
+    r"(?:item\s+model\s+number|model\s+(?:number|no)|style\s+(?:number|no)|"
+    r"part\s+(?:number|no)|mpn|sku)\s*[:#-]?\s*[a-z0-9][a-z0-9._/-]{2,}"
+    # Keep this in lockstep with retrieval.IDENTIFIER_LABEL_RE: shorthand
+    # identifiers require a digit, avoiding false exact-ID routing for prose.
+    r"|model\s+(?=[a-z0-9._/-]*\d)[a-z0-9][a-z0-9._/-]{2,}"
+    r")",
     re.IGNORECASE,
 )
 CORRECTION_CUE_RE = re.compile(
@@ -858,6 +864,13 @@ def preference_parse_decision(
         and (browsing or buying)
         and not correction
     )
+    scenario_expansion = bool(
+        query_expansion_enabled()
+        and not exact_identifier
+        and not correction
+        and state.turn == 0
+        and looks_like_scenario_query(message)
+    )
 
     safe_case: str | None = None
     if explicit_initial_request:
@@ -870,6 +883,8 @@ def preference_parse_decision(
         safe_case = "exact_identifier"
     elif no_state_change:
         safe_case = "no_state_change"
+    if scenario_expansion and safe_case == "explicit_initial_request":
+        safe_case = None
 
     reasons: list[str] = []
     risk_score = 0
@@ -888,6 +903,9 @@ def preference_parse_decision(
     if len(patch.remove_preferences) + len(patch.no_preference_attributes) > 1:
         reasons.append("multiple_destructive_updates")
         risk_score += 2
+    if scenario_expansion:
+        reasons.append("scenario_query_expansion")
+        risk_score += 1
     if safe_case is not None:
         risk_score = max(0, risk_score - 3)
     elif not reasons:

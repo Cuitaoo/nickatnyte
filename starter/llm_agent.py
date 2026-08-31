@@ -24,6 +24,12 @@ from starter.preference_tool import (
     apply_preference_patch,
     references_unnamed_earlier_preference,
 )
+from starter.query_expansion import (
+    ScenarioHypothesis,
+    looks_like_scenario_query,
+    query_expansion_enabled,
+    validate_scenario_hypotheses,
+)
 from starter.state import ShoppingState
 
 
@@ -83,6 +89,30 @@ State extraction rules:
 - Infer confirmed constraints only from shopper messages. The aggregate profile is
   deliberately not provided because it must not become a hard active constraint.
 - Never create, request, or return product IDs."""
+
+TEMPORARY_RETRIEVAL_PROMPT = """
+Temporary retrieval hypothesis rules:
+- scenario_hypotheses is separate from confirmed state. Use it only when the
+  latest message expresses a broad scenario or goal whose ordinary product
+  implications could improve semantic catalog recall.
+- scenario_query contains only concise inferred functional catalog language,
+  such as "portable long battery life". Omit literal product nouns, audience,
+  brand, location, identifiers, stated attributes, and numeric limits: the
+  deterministic category and feature routes already handle those facts.
+- Do not infer weather, season, or insulation from a country or city alone. If
+  the scenario is too ambiguous to support a functional hypothesis, return [].
+- Inferred qualities are temporary recall ideas, never set_preferences,
+  search_terms, removals, or category values.
+- When the scenario is explicit, return one focused hypothesis. Examples:
+  - "shoes for wet weather" -> scenario_query="waterproof traction" with
+    basis="wet weather".
+  - "laptop backpack for commuting" -> scenario_query="padded laptop sleeve
+    comfortable carrying" with basis="commuting".
+- basis must be copied verbatim from the latest shopper message. confidence is
+  between 0 and 1 and reflects how strongly that text supports the expansion.
+- Return at most three concise hypotheses. Return [] for precise catalog,
+  identifier, or attribute-led queries that need no expansion.
+"""
 
 
 PreferenceAttribute = Literal[
@@ -144,6 +174,14 @@ class ModelPreferenceRemoval(BaseModel):
     value: ShortText | None = None
 
 
+class ModelScenarioHypothesis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scenario_query: Annotated[str, Field(min_length=1, max_length=240)]
+    basis: Annotated[str, Field(min_length=1, max_length=120)]
+    confidence: Annotated[float, Field(ge=0.0, le=1.0)]
+
+
 class InvalidInterpretation(RuntimeError):
     """The model did not produce one valid preference update tool call."""
 
@@ -180,6 +218,9 @@ class PreferenceToolInput(BaseModel):
     search_terms: Annotated[
         list[ShortText], Field(default_factory=list, max_length=24)
     ]
+    scenario_hypotheses: Annotated[
+        list[ModelScenarioHypothesis], Field(default_factory=list, max_length=3)
+    ]
     runtime: ToolRuntime
 
 
@@ -190,6 +231,8 @@ class PreferenceWorkflowState(MessagesState):
     prompt_tokens: int
     completion_tokens: int
     tool_applied: bool
+    scenario_hypotheses: tuple[ScenarioHypothesis, ...]
+    allow_scenario_hypotheses: bool
 
 
 @tool("update_user_preferences", args_schema=PreferenceToolInput)
@@ -202,6 +245,7 @@ def update_user_preferences(
     remove_preferences: list[ModelPreferenceRemoval],
     no_preference_attributes: list[RemovableAttribute],
     search_terms: list[str],
+    scenario_hypotheses: list[ModelScenarioHypothesis],
     runtime: ToolRuntime,
 ) -> Command:
     """Validate and store shopper preferences in thread-scoped runtime state."""
@@ -266,6 +310,24 @@ def update_user_preferences(
         no_preference_attributes=explicit_no_preferences,
         search_terms=explicit_search_terms,
     )
+    allow_scenario_hypotheses = bool(
+        runtime.state.get("allow_scenario_hypotheses", False)
+    )
+    validated_scenario_hypotheses = (
+        validate_scenario_hypotheses(
+            [
+                ScenarioHypothesis(
+                    scenario_query=item.scenario_query,
+                    basis=item.basis,
+                    confidence=item.confidence,
+                )
+                for item in scenario_hypotheses
+            ],
+            latest_message,
+        )
+        if allow_scenario_hypotheses
+        else ()
+    )
     if not runtime.tool_call_id:
         raise ValueError("preference tool call is missing its identifier")
     updated = apply_preference_patch(current, patch)
@@ -273,6 +335,7 @@ def update_user_preferences(
         update={
             "shopping_state": updated,
             "preference_patch": patch,
+            "scenario_hypotheses": validated_scenario_hypotheses,
             "tool_applied": True,
             "messages": [
                 ToolMessage(
@@ -323,9 +386,13 @@ def _normalize_tool_arguments(raw_arguments: object) -> object:
                 if isinstance(item, dict)
                 and item.get("attribute") in allowed_attributes
             ]
-    for field_name in ("no_preference_attributes", "search_terms"):
+    for field_name in (
+        "no_preference_attributes",
+        "search_terms",
+        "scenario_hypotheses",
+    ):
         value = arguments.get(field_name)
-        if isinstance(value, str):
+        if isinstance(value, (str, dict)):
             arguments[field_name] = [value]
     return arguments
 
@@ -336,6 +403,7 @@ class Interpretation:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     patch: PreferencePatch | None = None
+    scenario_hypotheses: tuple[ScenarioHypothesis, ...] = ()
 
 
 class PreferenceInterpreter:
@@ -410,6 +478,12 @@ class PreferenceInterpreter:
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "tool_applied": False,
+            "scenario_hypotheses": (),
+            "allow_scenario_hypotheses": bool(
+                query_expansion_enabled()
+                and state.turn == 0
+                and looks_like_scenario_query(message)
+            ),
         }
         with self._usage_lock:
             self._usage_by_session.pop(state.session_id, None)
@@ -442,6 +516,11 @@ class PreferenceInterpreter:
                 if isinstance(result.get("preference_patch"), PreferencePatch)
                 else None
             ),
+            scenario_hypotheses=tuple(
+                item
+                for item in result.get("scenario_hypotheses", ())
+                if isinstance(item, ScenarioHypothesis)
+            ),
         )
 
     def _call_model(self, state: PreferenceWorkflowState) -> dict:
@@ -450,9 +529,12 @@ class PreferenceInterpreter:
             "latest_shopper_message": state["latest_user_message"],
             "current_state": shopping_state.to_prompt_dict(),
         }
+        system_prompt = SYSTEM_PROMPT
+        if state.get("allow_scenario_hypotheses", False):
+            system_prompt += TEMPORARY_RETRIEVAL_PROMPT
         response = self._bound_model.invoke(
             [
-                SystemMessage(content=SYSTEM_PROMPT),
+                SystemMessage(content=system_prompt),
                 HumanMessage(content=json.dumps(payload, sort_keys=True)),
             ]
         )
@@ -478,7 +560,13 @@ class PreferenceInterpreter:
             )
         arguments = _normalize_tool_arguments(response.tool_calls[0].get("args", {}))
         try:
-            PreferencePatch.model_validate(arguments)
+            patch_arguments = dict(arguments)
+            raw_hypotheses = patch_arguments.pop("scenario_hypotheses", [])
+            PreferencePatch.model_validate(patch_arguments)
+            if not isinstance(raw_hypotheses, list):
+                raise TypeError("scenario_hypotheses must be a list")
+            for item in raw_hypotheses:
+                ModelScenarioHypothesis.model_validate(item)
         except Exception as exc:
             raise InvalidInterpretation(
                 "model returned invalid preference arguments",
