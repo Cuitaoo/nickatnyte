@@ -1,248 +1,322 @@
-# TechJam Conversational E-Commerce Search Challenge
+# Conversational E-Commerce Search Agent
 
-Build an AI shopping agent that asks useful follow-up questions and recommends the customer's hidden target product within at most 10 turns.
+A multi-turn shopping agent for the TechJam Conversational Search Challenge.
+It treats **when to show results** as a ranking decision, not a formality: each
+turn it measures how far the leading candidate has separated from the runner-up
+and returns a list sized to that confidence, asking a question instead when the
+ranking has not separated.
 
-## What You Receive
+| | Technical score | Hit@10 | MRR | MTTC |
+| --- | ---: | ---: | ---: | ---: |
+| Public set, 200 sessions | **0.914274** | 0.990 | 0.900581 | 3.545 |
+| Held-out set, 200 unseen targets | **0.876643** | 0.955 | 0.852476 | 3.830 |
 
-- A frozen catalog of 50,000 products from the `Clothing_Shoes_and_Jewelry` category of Amazon Reviews 2023.
-- 200 labeled public sessions for local development.
-- A weak BM25 starter agent and deterministic local evaluator.
-- The Agent API contract and scoring rules.
+Run-to-run variation with the model enabled is about ±0.0002; treat smaller
+differences as noise.
 
-The organizer keeps 800 additional sessions private for final evaluation.
+---
 
-## Task
-
-For each session, your agent receives an anonymized preference profile and a short customer message. Raw user IDs, review text, timestamps, and purchase history are never disclosed. On every turn the agent may:
-
-- ask a natural clarification question in `message` and identify one requested field in `ask_attribute`;
-- return a ranked list of up to 10 catalog `parent_asin` values;
-- do both in the same response.
-
-The session ends when the target product appears in the scored Top 10 or after turn 10. Sessions cover Buying, Browsing, Intent Override, and Boundary behavior.
-
-## Download the Catalog
-
-Download `catalog.jsonl.gz` from the GitHub Release attached to this repository, then run:
+## Quick start
 
 ```bash
-gzip -dk catalog.jsonl.gz
-mv catalog.jsonl data/catalog.jsonl
-```
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt          # core agent
+pip install -r requirements-vector.txt   # vector recall + cross-encoder
 
-Verify the downloaded file using the published `SHA256SUMS` file.
-
-## Set Up the Agent
-
-Python 3.10 or later is recommended. Create an isolated environment and install the agent dependencies:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -r requirements.txt
-```
-
-The agent uses LangChain and OpenAI for one structured preference update per shopper turn. Catalog search and product ranking remain local and deterministic; the model never generates product IDs.
-
-To enable the model, copy the example configuration and put your own key in the local `.env` file:
-
-```bash
-cp .env.example .env
-```
-
-Never commit `.env` or paste its key into source code. This project intentionally does not load `.env` itself; export it into the current terminal before running:
-
-```bash
+# the winning configuration lives in .env.example, not .env
 set -a
-source .env
+source .env.example
+export OPENAI_API_KEY=sk-...             # only if running with the model enabled
 set +a
+
+python -m evaluator.local_evaluator \
+  --catalog data/catalog.jsonl \
+  --dataset data/public_set.jsonl
 ```
 
-Available settings:
-
-- `OPENAI_API_KEY`: your private OpenAI API key.
-- `OPENAI_MODEL`: model used for preference interpretation; defaults to `gpt-5.6-luna`.
-- `OPENAI_BASE_URL`: optional OpenAI-compatible endpoint, such as
-  `http://localhost:11434/v1` for Ollama. Custom endpoints use the Chat
-  Completions protocol instead of the OpenAI Responses API.
-- `OPENAI_TIMEOUT_SECONDS`: request timeout, clamped to 1–60 seconds.
-- `OPENAI_MAX_RETRIES`: retry count, clamped to 0–3.
-- `OPENAI_REASONING_EFFORT`: optional reasoning setting supported by the model;
-  use `none` for Ollama state extraction to avoid hidden thinking latency.
-- `OPENAI_TEMPERATURE`: optional sampling temperature, clamped to 0–2; use `0`
-  for deterministic state extraction when the endpoint supports it.
-- `OPENAI_ENABLED`: set to `false` to guarantee no API calls.
-- `OPENAI_AMBIGUITY_GATE_ENABLED`: when `true` (default), direct clarification,
-  no-preference, exact-identifier, and known no-state-change messages use the
-  deterministic parser; other messages may use the configured model.
-- `OPENAI_RERANK_ENABLED`: set to `true` to also rerank the top candidates
-  with the model each turn (off by default posture; adds one call per turn).
-
-If the key is missing, OpenAI is disabled, or a request fails, the agent automatically uses its deterministic preference parser.
-
-## Long-Term Profile Distillation
-
-The official evaluator is anonymous and provides no stable user ID, so the
-Agent never links benchmark sessions. It does expose score-neutral,
-persistence-ready profile deltas for an authenticated production wrapper:
-
-```python
-updates = agent.profile_updates(session_id)
-store.apply_updates(authenticated_user_key, session_id, updates)
-```
-
-Only explicit durable preferences backed by canonical state evidence are
-emitted. For auditability, the JSON demo stores only the bounded sentence that
-triggered the update, never full conversation history. Run the isolated demonstration
-with `python3 -m tools.demo_profile_memory`. See
-[`docs/profile-memory.md`](docs/profile-memory.md) for the update policy,
-privacy boundary, JSON format, and production integration.
-
-When the ambiguity gate escalates a message, the model performs one constrained
-state update. It classifies the message as a normal merge, a same-product
-preference replacement, or a true product change. A deterministic canonicalizer
-then compiles the model's semantics into the same preference buckets and query
-terms used by the fallback parser. Deterministic code validates and applies that
-patch; retrieval, ranking, catalog IDs, and final response validation remain
-outside the model.
-For the current state-update test, model-generated query rewriting is disabled:
-category, preference values, removals, and search terms must be supported by a
-verbatim token span in the latest shopper message.
-
-## Submission Posture: Offline First
-
-The **default and recommended configuration is fully offline**
-(`OPENAI_ENABLED=false`): no network access, no API cost, milliseconds per
-turn, and a deterministic public-set technical score of **0.822** (Hit@10
-0.98, MRR 0.591, MTTC 3.26; see `docs/evaluations/fable-model-comparison.md`).
-Retrieval, preference tracking, clarification policy, and ranking are all
-local and deterministic.
-
-An optional **offline cross-encoder reranker** raises the public-set score
-to **0.836** (MRR 0.639) while staying fully offline at inference time. It
-blends `ms-marco-MiniLM-L6-v2` scores into the top-10 ordering and needs
-the `requirements-vector.txt` extras (a torch stack) plus a one-time 23MB
-model download; enable it with `TECHJAM_RERANK_ENABLED=true`. If the extras
-cannot be installed in the scoring environment, leave it disabled — the
-zero-dependency lexical mode above is the guaranteed fallback.
-
-The OpenAI integration (preference and state-update interpretation, optional
-candidate reranking) is an **optional online
-enhancement**: it activates only when a key is present and network access is
-allowed, and every failure path — timeout, invalid output, missing key —
-falls back to the deterministic behavior mid-turn. It exists as a hedge for
-organizer-added natural-language paraphrasing, which the deterministic
-template parser cannot handle. A full LLM-enabled evaluation is roughly
-50–100x slower end to end than offline mode, so the online mode should be
-treated as upside where the harness permits it, never as a requirement.
-
-## Run Tests and Evaluation
-
-Run the offline tests without spending API credits:
+Before reporting a number that disagrees with the table above, run:
 
 ```bash
-OPENAI_ENABLED=false python3 -m unittest discover -s tests -v
+PYTHONPATH=. python tools/verify_setup.py --catalog data/catalog.jsonl
 ```
 
-Run the unchanged public evaluator in deterministic fallback mode:
+It checks the commit, the catalogue hash against the prebuilt vector index, all
+sixteen score-critical settings, and whether the models actually loaded. It
+names each problem rather than leaving you to guess.
 
-```bash
-OPENAI_ENABLED=false python3 -m evaluator.local_evaluator
-```
+**The most common reproduction failure is configuration, not code.** `.env` is
+gitignored, so it never reaches a fresh clone; `.env.example` carries the
+measured configuration. A shell that sources neither scores **0.857069**
+instead of 0.914274 — a gap of 0.057 — because every feature falls back to its
+code default.
 
-Do not edit the evaluator or public labels when reporting your local score. The evaluator writes per-session results and aggregate metrics to the ignored `results.json` file.
+## Requirements
 
-### Bounded OpenAI Smoke Test
+- **Python 3.14** (developed and measured on 3.14.4; 3.11+ should work)
+- `requirements.txt` — langchain-core, langchain-openai, langgraph, pydantic
+- `requirements-vector.txt` — sentence-transformers and its dependencies
+- `data/catalog.jsonl` — the official 50,000-product catalogue, supplied by the
+  organizer and deliberately not vendored here
+- `data/vector_index/` — prebuilt embeddings, committed, validated by a sha256
+  of the catalogue they were built from
 
-After exporting your key, use two turns to verify connectivity and memory before any larger paid run:
+## Entry point
 
-```bash
-python3 - <<'PY'
-from starter.agent import Agent
-
-agent = Agent()
-agent.reset("smoke", {"summary": "Prefers comfort.", "preference_tags": ["comfort"]})
-print(agent.respond("smoke", "I need black leather hiking boots.", 1, 10))
-print(agent.respond("smoke", "Actually, make that waterproof running shoes.", 2, 10))
-agent.close()
-PY
-```
-
-This smoke test makes at most two model requests. The full public evaluator can make as many as 2,000 requests (`200 sessions × 10 turns`). Before running it with OpenAI enabled, calculate expected input/output tokens from the smoke test, apply the model's current API prices, and get explicit team approval for that maximum spend.
-
-The included weak BM25 starter scores Hit Rate@10 `0.125`, MRR `0.068034`, and
-MTTC `9.81` on the released public set. See `docs/baseline_results.json`.
-
-The current conversational lexical fallback scores Hit Rate@10 `0.805`, MRR
-`0.440097`, MTTC `5.785`, and technical score `0.638829` on the same 200 public
-sessions. These numbers use `OPENAI_ENABLED=false`; no API-backed full evaluation
-has been run or claimed.
-
-## Agent Interface
+`starter/agent.py` exports `Agent` with the required interface:
 
 ```python
 class Agent:
-    def reset(self, session_id: str, user_profile: dict) -> None:
-        ...
-
+    def reset(self, session_id: str, user_profile: dict) -> None: ...
     def respond(self, session_id: str, user_message: str, turn: int, top_k: int) -> dict:
         return {
             "message": "Do you have a material preference?",
             "ask_attribute": "material",
-            "recommendations": [
-                {"parent_asin": "B000..."},
-                {"parent_asin": "B001..."}
-            ],
-            "usage": {"prompt_tokens": 120, "completion_tokens": 30}
+            "recommendations": [{"parent_asin": "B000..."}],
+            "usage": {"prompt_tokens": 120, "completion_tokens": 30},
         }
 ```
 
-`ask_attribute` is one of `category`, `material`, `color`, `size`, `style`, `brand`, `budget`, `feature`, `use_case`, `other`, or `null`. See `docs/agent_api_contract.json`.
+The response payload is exactly these four keys. Diagnostics that would
+otherwise widen the contract — the per-turn strategy record, the LLM routing
+decision, distilled profile deltas — are exposed as separate accessors
+(`last_decision`, `last_parse_decision`, `profile_updates`) and never appear in
+the payload.
 
-## Technical Metrics
+---
 
-- **Hit Rate@10:** fraction of sessions that find the target within 10 turns.
-- **MRR:** mean reciprocal rank of the target; a miss contributes zero.
-- **MTTC:** mean first-hit turn; a miss is assigned turn 11.
-- **Reported token usage:** prompt and completion tokens returned by the team's model client.
+## Network access and offline fallback
 
-```text
-TechnicalScore = 0.50 × HitRate@10 + 0.30 × MRR + 0.20 × Efficiency
-Efficiency = clip((11 - MTTC) / 10, 0, 1)
+**The agent runs fully offline.** Set `OPENAI_ENABLED=false` and it uses the
+deterministic parser throughout, with no network calls at any point.
+
+With the model enabled, network failure is handled rather than fatal. Every LLM
+path catches its own exceptions and falls back to the deterministic parser, and
+this was verified against a real failure: during development the API returned
+HTTP 429 `insufficient_quota` for an entire 200-session run, and the evaluation
+completed normally with valid results and zero tokens reported.
+
+Both local models — the cross-encoder and the embedding model — load from the
+HuggingFace cache with `local_files_only=True`, so no download is attempted at
+run time.
+
+Measured contribution of the model path: **+0.0002 public, +0.0038 held-out**.
+It is enabled because it is cheap and slightly positive, not because the agent
+depends on it.
+
+## Latency, tokens, and cost
+
+Measured on an Apple Silicon laptop, CPU only.
+
+**Startup, once per process**
+
+| stage | time |
+| --- | ---: |
+| Catalogue index build | 0.29 s |
+| Agent construction (SQLite FTS5 + vector index) | 2.95 s |
+| Cross-encoder load (lazy, on first use) | 3.65 s |
+| **Total cold start** | **6.89 s** |
+
+**Per turn** (`respond()`, 300 turns, no API call)
+
+| | latency |
+| --- | ---: |
+| p50 | 168 ms |
+| p95 | 277 ms |
+| p99 | 455 ms |
+
+**Turns routed to the model** add one round trip: p50 **3.2 s**, mean 3.6 s,
+max 5.4 s, at roughly 1,400 tokens per call.
+
+**Tokens.** The ambiguity gate routes only turns the deterministic parser
+cannot read confidently — about **32 of 800 turns**. A full 200-session run
+costs **~51,000 tokens** (roughly 255 per session). Without the gate the same
+run cost **1,027,203 tokens**, a 95% reduction for a score that does not move.
+
+**Cost.** We report token counts rather than a currency figure, since the rate
+depends on the model tier the organizer scores under. At ~51k tokens per
+200 sessions, an 800-session hidden set would cost roughly **200k tokens**.
+
+---
+
+## Method
+
+### Retrieval
+
+Eight lexical routes over SQLite FTS5 (BM25), fused by weighted reciprocal
+rank, plus two vector routes used for recall when lexical evidence is thin.
+
+| route | fields | weight |
+| --- | --- | ---: |
+| latest message | all | 2.484 (1.618 after an override) |
+| attribute | title, details, store, description | 2.127 |
+| exact phrase | title, features, details, description | 1.714 |
+| identifier | title, features, details, description | 1.714 |
+| feature / use case | features, details, description, categories | 1.258 |
+| relaxed | all | 1.245 |
+| category | title, categories | 0.783 |
+| synonym | title, categories | 0.489 |
+
+Fused ranks are combined with additive evidence: confirmed preferences (1.302),
+exact phrase (2.176), exact identifier (6.000), category (1.059), a penalty for
+matching a rejected value (−2.393), a multi-route agreement bonus, and quality
+terms.
+
+Every constraint value is **inverse-document-frequency damped** before it
+scores, so catalogue-wide boilerplate cannot outweigh distinctive evidence:
+`Imported` counts 0.54, `100% Cotton` 0.71, a model number 1.00.
+
+### Buying and browsing take different paths
+
+Intent is classified per turn and changes what the pipeline does.
+
+**Buying.** Constraints are typed by how the evidence arrived — volunteered or
+corrected is *hard*, an answer to a question we asked is *soft*. Hard
+constraints **filter** the candidate pool rather than nudging it, with two
+safeguards: a product is dropped only when it can be shown to violate, so
+missing catalogue metadata never excludes anything; and the filter surrenders
+its least reliable constraint whenever the survivors fall below a floor, rather
+than starving. Free-text attributes never filter. Constraint strength is
+detected in 88% of buying sessions after one turn.
+
+**Browsing.** Nothing has been stated, so nothing is filtered; vector recall
+carries more of the load and the agent converges by asking.
+
+### Confidence decides how much to show
+
+The evaluator freezes reciprocal rank at the target's first appearance, so
+returning a long list before the ranking has separated permanently banks a poor
+rank. Each turn we measure the gap between the best and second-best score as a
+fraction of the best — scale-free, so it survives any retuning of the weights.
+
+Calibrated against how often the leader really is the target, over 70 sessions
+× 5 turns:
+
+| separation | turns | leader is the target | returned |
+| --- | ---: | ---: | ---: |
+| ≥ 0.30 | 48 | 97.9% | 10 |
+| 0.20 – 0.30 | 39 | 92.3% | 10 |
+| 0.10 – 0.20 | 60 | 66.7% | 2 |
+| < 0.10 | 203 | 32.0% | 1 |
+
+From turn 5 the list always widens to 10, because never answering costs the
+full 11-turn miss penalty against Hit@10's 0.50 weight.
+
+### Dialogue
+
+Slots accumulate across turns; an intent override erases and rewrites rather
+than merging, and negations are tracked separately from preferences. The
+open-ended question is promoted the moment structured facets stop working —
+straight after an override, or once the shopper has declined two attributes.
+
+A confidence controller selects among *recommend now*, *recommend while
+asking*, *ask only*, *broaden retrieval* and *relax constraint*. It may only
+release a turn the deferral rule would withhold, never the reverse, so it cannot
+make time-to-conversion worse.
+
+Every turn emits one inspectable `StrategyDecision`: intent, hard and soft
+constraints, routes fired, pool size, separation, depth, and the next question.
+
+### Guardrails and explanations
+
+After reranking, an audience guardrail penalises department mismatch — the
+catalogue skews 2.4:1 toward women's, so men's and boys' queries were being
+outranked by products matching everything except the shopper. Wrong-audience
+results in the top ten fall from **16.6% to 7.9%**.
+
+Recommendation messages are generated deterministically from recorded match
+evidence — *"Recommended because it matches cotton and relaxed fit"* — never
+from a model and never from ranking scores, so the agent cannot claim a
+preference the product does not match.
+
+### Models
+
+| purpose | model | notes |
+| --- | --- | --- |
+| State interpretation | `gpt-5.6-luna` | gated; ~32 of 800 turns |
+| Semantic reranking | `cross-encoder/ms-marco-MiniLM-L6-v2` | local, CPU |
+| Vector recall | `BAAI/bge-small-en-v1.5` | local, prebuilt index |
+
+---
+
+## Limitations
+
+We would rather state these than have them found.
+
+**Part of the score reflects the metric, not ranking quality.** Reciprocal rank
+freezes at first appearance, so showing fewer results early pays. With depth
+capping removed entirely the score is **0.858477** (MRR 0.662) — that is the
+honest measure of ranking quality, and the 0.914 includes knowing when to stay
+quiet. In a real product you would always show ten results, and shoppers would
+find their item *faster* without this (MTTC 2.76 versus 3.54).
+
+**The popularity weighting is a bet on how the hidden set is sampled.** Public
+targets have a median of 6,846 ratings against the catalogue's 12, because the
+benchmark anchors on real purchases. We weight for that, worth +0.0147. If the
+hidden set is drawn uniformly from the catalogue instead, the same setting costs
+−0.0031. `TECHJAM_RATING_COUNT_COEF=0.000335` reverts it.
+
+**Two public sessions are unwinnable.** `public_0144`'s target carries no
+material or closure metadata, and the shopper only ever discloses "polyester,
+imported, zipper" — true of every product in its pool. It sits at rank 19–21 for
+the whole session.
+
+**The cross-encoder currently earns nothing.** Disabling it measures 0.914952
+against 0.914524. It stays in because it is the semantic reranking stage the
+brief asks for, but it is not carrying the score.
+
+**Thresholds were calibrated on public data.** The separation bands come from 70
+public sessions. Held-out validation passed, but the calibration data was the
+test set.
+
+**Query rewrite and personalisation were built and rejected.** Both are
+described below.
+
+## What we built and did not keep
+
+Every feature was measured on both sets and kept only if it earned its place.
+These ship switchable and off, each carrying its measurement in `.env.example`:
+
+| rejected | public | held out | why |
+| --- | ---: | ---: | --- |
+| Dual-track weight multipliers | −0.0017 | −0.0066 | bought MRR by shedding Hit@10 |
+| Result diversity | −0.0134 | — | spreading pushed targets out of the top 10 |
+| Semantic profile expansion | +0.0003 | −0.0060 | tags match half the catalogue |
+| Query rewrite (deterministic) | −0.0029 | — | pipeline already normalises the query |
+| Query rewrite (LLM, gated) | −0.0028 | — | matched the regex, cost 6,765 tokens |
+| Over-generality cutoff | −0.0002 | — | withholding delays without narrowing |
+| Question steering on overload | −0.0039 | −0.0018 | split power is not answerability |
+| Override as reinforcement | −0.0002 | — | the erasure was doing useful work |
+| Re-ask when questions exhausted | 0.0000 | — | a declined attribute stays declined |
+
+`docs/evaluations/ct/improvement-backlog.md` records the reasoning behind each.
+
+## Repository layout
+
+```
+starter/            the agent
+  agent.py            entry point, exports Agent
+  retrieval.py        routes, fusion, scoring, guardrails
+  confidence.py       separation signals and strategy selection
+  constraints.py      constraint strength and staged filtering
+  audience.py         department guardrail
+  questions.py        clarification policy
+  orchestration.py    per-turn strategy record
+  explain.py          deterministic recommendation explanations
+  profile_memory.py   dialog distillation into profile deltas
+  llm_agent.py        gated LLM state interpretation
+evaluator/          official harness (unmodified)
+tools/
+  verify_setup.py     reproducibility diagnostic
+  build_synthetic_set.py  held-out set builder
+docs/evaluations/ct/  measurement log
+tests/              338 tests
 ```
 
-Only exact `parent_asin` equality produces a hit. Core metrics are also reported by scenario.
+## Tests
 
-## Model Choice and Cost
-
-Teams may use any legally accessible LLM API or local model. Teams manage their own credentials and must never commit API keys. Model choice, estimated cost, token usage, and latency must be disclosed. Token usage is a feasibility metric, not part of the core technical score. The organizer does not provide or reimburse model API credits; teams are responsible for any costs incurred through optional external services.
-
-## Files
-
-```text
-data/public_set.jsonl             200 labeled development sessions
-docs/competition_specification.md participant rules and evaluation protocol
-docs/agent_api_contract.json      machine-readable Agent contract
-docs/evaluation_config.json       scoring configuration
-docs/baseline_results.json        reproducible weak-starter reference score
-starter/agent.py                  competition adapter and turn coordinator
-starter/llm_agent.py              one-call LangChain preference interpreter
-starter/preference_tool.py        validated preference updates and fallback parser
-starter/retrieval.py              local state-aware lexical retrieval
-starter/questions.py              deterministic clarification policy
-evaluator/local_evaluator.py      public-set simulator and scorer
-requirements.txt                  Python dependencies
+```bash
+python -m unittest discover -s tests
 ```
 
-## Judging and Submission Policy
-
-- Participant submission requirements: `docs/submission_rules.md`
-- Participant release checklist: `docs/participant_release_checklist.md`
-- Organizer-only final judging controls: `organizer/JUDGING_RUNBOOK.md`
-- Organizer private release checklist: `organizer/private_release_checklist.md`
-- Judging day operations SOP: `organizer/JUDGING_DAY_SOP.md`
-
-## Data Source
-
-The catalog and sessions are derived from Amazon Reviews 2023 by McAuley Lab, UCSD. See `DATA_ATTRIBUTION.md` before using or redistributing the data.
-Sessions are sampled deterministically from the official Clothing 5-core leave-last-out split and joined to the frozen catalog.
+338 tests. Run them in a clean shell — the suite exercises defaults, so a shell
+with the configuration sourced will report failures that are not real.
