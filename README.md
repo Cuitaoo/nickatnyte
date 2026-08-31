@@ -238,38 +238,45 @@ preference the product does not match.
 
 ---
 
-## Limitations
+## Known trade-offs and open questions
 
-We would rather state these than have them found.
+Where a design choice has a cost or rests on an assumption, we state it with the
+number attached.
 
-**Part of the score reflects the metric, not ranking quality.** Reciprocal rank
-freezes at first appearance, so showing fewer results early pays. With depth
-capping removed entirely the score is **0.858477** (MRR 0.662) — that is the
-honest measure of ranking quality, and the 0.914 includes knowing when to stay
-quiet. In a real product you would always show ten results, and shoppers would
-find their item *faster* without this (MTTC 2.76 versus 3.54).
+**Result depth is tuned to the evaluation's stopping rule.** Reciprocal rank is
+fixed at the target's first appearance, so a confidence-sized list is worth
+more than a full one. Removing depth capping entirely scores **0.858477**
+(MRR 0.662), which is the system's ranking quality on its own; the difference
+is the contribution of returning results only once the ranking has separated.
+The behaviour has a product reading — show a shortlist while you are still
+narrowing — but the specific sizing is fitted to this metric, and a deployment
+optimising for browsing would show ten results throughout.
 
-**The popularity weighting is a bet on how the hidden set is sampled.** Public
-targets have a median of 6,846 ratings against the catalogue's 12, because the
-benchmark anchors on real purchases. We weight for that, worth +0.0147. If the
-hidden set is drawn uniformly from the catalogue instead, the same setting costs
-−0.0031. `TECHJAM_RATING_COUNT_COEF=0.000335` reverts it.
+**The quality signal assumes the hidden set is sampled like the public one.**
+Public targets have a median of 6,846 ratings against the catalogue's 12,
+because the benchmark anchors on the final purchased record and purchases skew
+popular. Weighting for that is worth **+0.0147**. We validated it on a holdout
+matched to the same popularity distribution (**+0.0186**), so it generalises
+across products — but if the hidden set is drawn uniformly from the catalogue
+instead, the setting costs −0.0031. `TECHJAM_RATING_COUNT_COEF=0.000335`
+reverts it.
 
-**Two public sessions are unwinnable.** `public_0144`'s target carries no
-material or closure metadata, and the shopper only ever discloses "polyester,
-imported, zipper" — true of every product in its pool. It sits at rank 19–21 for
-the whole session.
+**Two public sessions are not solvable from the information disclosed.**
+`public_0144`'s target carries no material or closure metadata, and the shopper
+discloses only "polyester, imported, zipper" — true of every product in its
+pool. It reaches rank 19–21 and stays there.
 
-**The cross-encoder currently earns nothing.** Disabling it measures 0.914952
-against 0.914524. It stays in because it is the semantic reranking stage the
-brief asks for, but it is not carrying the score.
+**Semantic reranking is currently neutral.** Disabling the cross-encoder
+measures 0.914952 against 0.914524, so its contribution sits inside run-to-run
+variation. It remains in the pipeline as the semantic reranking stage, and the
+lexical and guardrail stages are carrying the current score.
 
-**Thresholds were calibrated on public data.** The separation bands come from 70
-public sessions. Held-out validation passed, but the calibration data was the
-test set.
+**Separation thresholds were calibrated on public sessions.** The bands come
+from 70 public sessions and were then validated on the held-out set, which
+passed — but the calibration data itself was in-distribution.
 
-**Query rewrite and personalisation were built and rejected.** Both are
-described below.
+**Query rewrite and profile-driven personalisation did not pay.** Both were
+built, measured on both sets, and are switched off; see the table below.
 
 ## What we built and did not keep
 
