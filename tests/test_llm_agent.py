@@ -47,6 +47,90 @@ class FakeChatModel:
 
 
 class PreferenceInterpreterTest(unittest.TestCase):
+    @patch.dict(
+        os.environ,
+        {
+            "TECHJAM_QUERY_EXPANSION_ENABLED": "true",
+            "TECHJAM_QUERY_EXPANSION_MODE": "recall",
+            "TECHJAM_QUERY_EXPANSION_MIN_CONFIDENCE": "0.60",
+        },
+    )
+    def test_retrieval_hypothesis_is_temporary_and_does_not_enter_state(self) -> None:
+        response = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "update_user_preferences",
+                    "args": tool_args(
+                        intent_mode="buying",
+                        category="laptop",
+                        set_preferences=[
+                            {"attribute": "budget", "value": "under 1000"}
+                        ],
+                        scenario_hypotheses=[
+                            {
+                                "scenario_query": "reliable portable long battery life",
+                                "basis": "uni",
+                                "confidence": 0.75,
+                            }
+                        ],
+                    ),
+                    "id": "call_query_expansion",
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+        result = PreferenceInterpreter(FakeChatModel(response)).interpret(
+            "I want a good laptop for uni under 1000",
+            ShoppingState.new("s", {}),
+        )
+
+        self.assertEqual(result.state.category, "laptop")
+        self.assertEqual(result.state.preferences, {"budget": ("under 1000",)})
+        self.assertEqual(result.state.search_terms, ())
+        self.assertEqual(len(result.scenario_hypotheses), 1)
+        self.assertEqual(result.scenario_hypotheses[0].basis, "uni")
+        self.assertEqual(
+            result.scenario_hypotheses[0].scenario_query,
+            "reliable portable long battery life",
+        )
+
+    @patch.dict(
+        os.environ,
+        {
+            "TECHJAM_QUERY_EXPANSION_ENABLED": "true",
+            "TECHJAM_QUERY_EXPANSION_MODE": "recall",
+        },
+    )
+    def test_retrieval_hypothesis_requires_explicit_basis(self) -> None:
+        response = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "update_user_preferences",
+                    "args": tool_args(
+                        scenario_hypotheses=[
+                            {
+                                "scenario_query": "portable long battery life",
+                                "basis": "daily commuting",
+                                "confidence": 0.90,
+                            }
+                        ]
+                    ),
+                    "id": "call_unsupported_basis",
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+        result = PreferenceInterpreter(FakeChatModel(response)).interpret(
+            "I want a laptop for uni",
+            ShoppingState.new("s", {}),
+        )
+
+        self.assertEqual(result.scenario_hypotheses, ())
+
     def test_omitted_no_op_tool_fields_use_safe_defaults(self) -> None:
         response = AIMessage(
             content="",

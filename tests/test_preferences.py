@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import FrozenInstanceError, replace
+from unittest.mock import patch
 
 import starter.state as state_module
 from starter.preference_tool import (
@@ -915,6 +916,71 @@ class PreferenceUpdateTest(unittest.TestCase):
 
 
 class PreferenceRoutingTest(unittest.TestCase):
+    def test_model_identifier_shorthand_bypasses_llm(self) -> None:
+        decision = preference_parse_decision(
+            "Please find model AB-1234 for me.", ShoppingState.new("s", {})
+        )
+
+        self.assertFalse(decision.use_llm)
+        self.assertEqual(decision.safe_case, "exact_identifier")
+
+    def test_model_prose_is_not_mistaken_for_identifier(self) -> None:
+        decision = preference_parse_decision(
+            "Show me a model shirt.", ShoppingState.new("s", {})
+        )
+
+        self.assertNotEqual(decision.safe_case, "exact_identifier")
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TECHJAM_QUERY_EXPANSION_ENABLED": "true",
+            "TECHJAM_QUERY_EXPANSION_MODE": "recall",
+        },
+    )
+    def test_broad_initial_scenario_routes_to_model_for_expansion(self) -> None:
+        decision = preference_parse_decision(
+            "I'm looking for a good laptop for uni under 1000.",
+            ShoppingState.new("s", {}),
+        )
+
+        self.assertTrue(decision.use_llm)
+        self.assertIsNone(decision.safe_case)
+        self.assertIn("scenario_query_expansion", decision.reasons)
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TECHJAM_QUERY_EXPANSION_ENABLED": "true",
+            "TECHJAM_QUERY_EXPANSION_MODE": "recall",
+        },
+    )
+    def test_precise_initial_request_still_bypasses_model(self) -> None:
+        decision = preference_parse_decision(
+            "I'm looking for black leather boots under 100.",
+            ShoppingState.new("s", {}),
+        )
+
+        self.assertFalse(decision.use_llm)
+        self.assertEqual(decision.safe_case, "explicit_initial_request")
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TECHJAM_QUERY_EXPANSION_ENABLED": "true",
+            "TECHJAM_QUERY_EXPANSION_MODE": "recall",
+        },
+    )
+    def test_detailed_catalog_style_message_does_not_trigger_expansion(self) -> None:
+        decision = preference_parse_decision(
+            "I'm looking for camisoles. Long torso camisole for extra coverage "
+            "with adjustable straps for a perfect fit.",
+            ShoppingState.new("s", {}),
+        )
+
+        self.assertFalse(decision.use_llm)
+        self.assertEqual(decision.safe_case, "explicit_initial_request")
+
     def test_explicit_initial_buying_request_is_safe_without_model(self) -> None:
         decision = preference_parse_decision(
             "I'm looking for Shorts Denim. A key requirement is: cotton.",

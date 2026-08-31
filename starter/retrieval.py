@@ -18,6 +18,7 @@ from starter.constraints import (
 )
 from starter.cross_encoder_reranker import CrossEncoderReranker
 from starter.profile import match_profile, profile_tags, semantic_profile_enabled
+from starter.query_expansion import ScenarioHypothesis
 from starter.state import ShoppingState
 from starter.synonyms import expand_terms
 from starter.tracks import (
@@ -38,8 +39,13 @@ from starter.vector_index import (
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 IDENTIFIER_LABEL_RE = re.compile(
-    r"\b(?:item\s+model\s+number|model\s+(?:number|no)|style\s+(?:number|no)|"
-    r"part\s+(?:number|no)|mpn|sku)\s*[:#-]?\s*([a-z0-9][a-z0-9._/-]{2,})",
+    r"\b(?:"
+    r"(?:item\s+model\s+number|model\s+(?:number|no)|style\s+(?:number|no)|"
+    r"part\s+(?:number|no)|mpn|sku)\s*[:#-]?\s*"
+    # Shorthand needs a digit so ordinary phrases such as "model shirt" do
+    # not become an identifier route.
+    r"|model\s+(?=[a-z0-9._/-]*\d)"
+    r")([a-z0-9][a-z0-9._/-]{2,})",
     re.IGNORECASE,
 )
 STOPWORDS = frozenset(
@@ -580,6 +586,12 @@ class CatalogRetriever:
         self.vector_feature_weight = _env_float(
             "TECHJAM_VECTOR_FEATURE_WEIGHT", 0.05, 0.0, 2.0
         )
+        # Scenario vectors are a distinct, low-weight RRF branch. They never
+        # replace lexical/category evidence or turn inferred language into a
+        # confirmed preference.
+        self.scenario_vector_weight = _env_float(
+            "TECHJAM_SCENARIO_VECTOR_WEIGHT", 0.25, 0.0, 2.0
+        )
         self.vector_recall_only = _env_bool("TECHJAM_VECTOR_RECALL_ONLY", True)
         self.vector_max_doc_frequency = _env_int(
             "TECHJAM_VECTOR_MAX_DOC_FREQUENCY", 750, 1, 50_000
@@ -738,6 +750,8 @@ class CatalogRetriever:
         state: ShoppingState,
         latest_message: str,
         top_k: int,
+        *,
+        scenario_hypotheses: tuple[ScenarioHypothesis, ...] = (),
     ) -> SearchResult:
         if top_k <= 0:
             return SearchResult.empty()
@@ -788,41 +802,73 @@ class CatalogRetriever:
             self.vector_weight > 0
             or self.vector_category_weight > 0
             or self.vector_feature_weight > 0
+            or scenario_hypotheses
         ):
             allowed_vector_routes = self._allowed_vector_routes(
                 state, latest_message, scores, route_ranks
             )
+            if scenario_hypotheses and self.vector_policy not in {
+                "0",
+                "false",
+                "no",
+                "off",
+            }:
+                allowed_vector_routes.add("vector_scenario")
             try:
                 if allowed_vector_routes:
                     search_with_scores = getattr(
                         self.vector_index, "search_routes_with_scores", None
                     )
-                    vector_routes = (
-                        search_with_scores(
-                            state,
-                            latest_message,
-                            self.vector_top_k,
-                            allowed_routes=allowed_vector_routes,
-                        )
-                        if callable(search_with_scores)
-                        else self.vector_index.search_routes(
-                            state,
-                            latest_message,
-                            self.vector_top_k,
-                            allowed_routes=allowed_vector_routes,
-                        )
-                    )
+                    if callable(search_with_scores):
+                        if scenario_hypotheses:
+                            vector_routes = search_with_scores(
+                                state,
+                                latest_message,
+                                self.vector_top_k,
+                                allowed_routes=allowed_vector_routes,
+                                scenario_hypotheses=scenario_hypotheses,
+                            )
+                        else:
+                            vector_routes = search_with_scores(
+                                state,
+                                latest_message,
+                                self.vector_top_k,
+                                allowed_routes=allowed_vector_routes,
+                            )
+                    else:
+                        if scenario_hypotheses:
+                            vector_routes = self.vector_index.search_routes(
+                                state,
+                                latest_message,
+                                self.vector_top_k,
+                                allowed_routes=allowed_vector_routes,
+                                scenario_hypotheses=scenario_hypotheses,
+                            )
+                        else:
+                            vector_routes = self.vector_index.search_routes(
+                                state,
+                                latest_message,
+                                self.vector_top_k,
+                                allowed_routes=allowed_vector_routes,
+                            )
                 else:
                     vector_routes = {}
             except Exception:
                 vector_routes = {}
             for route_name, vector_rows in vector_routes.items():
+                scenario_route = route_name.startswith("vector_scenario_")
                 route_weight = (
-                    0.0
+                    self.scenario_vector_weight
+                    if scenario_route
+                    else 0.0
                     if self.vector_recall_only
                     else self._vector_route_weight(route_name)
                 )
-                if route_weight <= 0 and self.vector_recall_only is False:
+                if (
+                    route_weight <= 0
+                    and self.vector_recall_only is False
+                    and not scenario_route
+                ):
                     continue
                 for rank, row in enumerate(vector_rows, start=1):
                     product_id, similarity = self._vector_row(row)

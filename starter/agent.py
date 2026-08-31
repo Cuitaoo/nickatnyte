@@ -35,6 +35,7 @@ from starter.preference_tool import (
     preference_parse_decision,
 )
 from starter.questions import choose_clarification
+from starter.query_expansion import ScenarioHypothesis, query_expansion_mode
 from starter.reranker import CandidateReranker
 from starter.retrieval import CatalogRetriever, RetrievalWeights, _is_product_change
 from starter.tracks import dual_track_enabled, resolve_track
@@ -154,6 +155,7 @@ class Agent:
         previous_category = state.category
         prompt_tokens = 0
         completion_tokens = 0
+        scenario_hypotheses: tuple[ScenarioHypothesis, ...] = ()
         parse_decision = preference_parse_decision(user_message, state)
         self._parse_decisions[session_id] = parse_decision
         use_interpreter = bool(
@@ -166,6 +168,7 @@ class Agent:
             "model_patch": None,
             "applied_patch": None,
             "fallback_error": None,
+            "scenario_hypotheses": [],
         }
 
         if use_interpreter:
@@ -174,6 +177,15 @@ class Agent:
                 interpreted_state, prompt_tokens, completion_tokens = (
                     self._validated_interpretation(session_id, interpretation)
                 )
+                scenario_hypotheses = interpretation.scenario_hypotheses
+                update_diagnostic["scenario_hypotheses"] = [
+                    {
+                        "scenario_query": item.scenario_query,
+                        "basis": item.basis,
+                        "confidence": item.confidence,
+                    }
+                    for item in scenario_hypotheses
+                ]
                 if interpretation.patch is not None:
                     update_diagnostic["model_patch"] = (
                         interpretation.patch.model_dump(mode="json")
@@ -224,9 +236,17 @@ class Agent:
 
         requested_count = min(10, max(0, int(top_k)))
         try:
-            search_result = self.retriever.search(
-                state, str(user_message), requested_count
-            )
+            if scenario_hypotheses and query_expansion_mode() == "recall":
+                search_result = self.retriever.search(
+                    state,
+                    str(user_message),
+                    requested_count,
+                    scenario_hypotheses=scenario_hypotheses,
+                )
+            else:
+                search_result = self.retriever.search(
+                    state, str(user_message), requested_count
+                )
         except Exception:
             search_result = self.retriever.fallback(requested_count)
 

@@ -19,6 +19,7 @@ from starter.retrieval import (
     _signature_disagreement,
     select_diverse_recommendations,
 )
+from starter.query_expansion import ScenarioHypothesis
 from starter.state import ShoppingState
 
 
@@ -138,7 +139,7 @@ class RetrievalTest(unittest.TestCase):
 
         self.assertEqual(results[0], "LEATHER_BOOT")
 
-    def test_model_number_gets_exact_identifier_boost(self) -> None:
+    def test_model_shorthand_gets_exact_identifier_boost(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         catalog_path = Path(directory.name) / "catalog.jsonl"
@@ -186,7 +187,7 @@ class RetrievalTest(unittest.TestCase):
 
         result = retriever.search(
             state,
-            "For that, what matters is: Hand Wash Only; Item model number: 5006715.",
+            "Please find model 5006715.",
             2,
         )
 
@@ -293,6 +294,54 @@ class RetrievalTest(unittest.TestCase):
         )
         self.assertIn(
             "vector_feature", [route_name for route_name, _rank in candidate.route_ranks]
+        )
+
+    def test_scenario_route_adds_candidate_with_small_rrf_signal(self) -> None:
+        class FakeVectorIndex:
+            def search_routes_with_scores(
+                self,
+                state,
+                latest_message,
+                top_k,
+                allowed_routes=None,
+                scenario_hypotheses=(),
+            ):
+                assert allowed_routes is not None
+                assert "vector_scenario" in allowed_routes
+                assert (
+                    scenario_hypotheses[0].scenario_query
+                    == "waterproof marathon trainer"
+                )
+                return {"vector_scenario_1": [("RAIN_RUNNER", 0.9)]}
+
+        self.retriever.vector_index = FakeVectorIndex()
+        self.retriever.vector_policy = "always"
+        self.retriever.vector_recall_only = True
+        self.addCleanup(setattr, self.retriever, "vector_index", None)
+        self.addCleanup(setattr, self.retriever, "vector_policy", "adaptive")
+        self.addCleanup(setattr, self.retriever, "vector_recall_only", True)
+
+        result = self.retriever.search(
+            replace(ShoppingState.new("s", {}), category="boots"),
+            "black boots",
+            10,
+            scenario_hypotheses=(
+                ScenarioHypothesis(
+                    scenario_query="waterproof marathon trainer",
+                    basis="boots",
+                    confidence=0.75,
+                ),
+            ),
+        )
+
+        candidate = next(
+            item for item in result.candidates if item.product_id == "RAIN_RUNNER"
+        )
+        self.assertIn("vector_scenario_1", dict(candidate.route_ranks))
+        self.assertAlmostEqual(
+            dict(candidate.score_components)["fusion"],
+            self.retriever.scenario_vector_weight
+            / (self.retriever.weights.rrf_offset + 1),
         )
 
     def test_low_similarity_vector_candidate_is_filtered(self) -> None:
@@ -671,13 +720,24 @@ class RetrievalWeightsTest(unittest.TestCase):
 
 
 class BudgetMatchTest(unittest.TestCase):
-    def test_exact_identifier_extraction_requires_label(self) -> None:
+    def test_exact_identifier_extraction_accepts_labeled_and_model_shorthand(self) -> None:
         self.assertEqual(
             _exact_identifiers(["Item model number: 5006715."]),
             ("5006715",),
         )
         self.assertEqual(
-            _exact_identifiers(["budget around $59.99", "Date First Available: 2021"]),
+            _exact_identifiers(["Please find model AB-1234 for me."]),
+            ("ab 1234",),
+        )
+        self.assertEqual(
+            _exact_identifiers(
+                [
+                    "budget around $59.99",
+                    "Date First Available: 2021",
+                    "show me a model shirt",
+                    "this model is comfortable",
+                ]
+            ),
             (),
         )
 

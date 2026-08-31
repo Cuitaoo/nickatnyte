@@ -16,6 +16,7 @@ from starter.preference_tool import (
     parse_preference_fallback,
 )
 from starter.profile_memory import ProfileUpdate
+from starter.query_expansion import ScenarioHypothesis
 from starter.state import ALLOWED_PREFERENCE_ATTRIBUTES, ShoppingState
 
 
@@ -126,6 +127,49 @@ class AgentIntegrationTest(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             agent.respond("missing", "blue shoes", 1, 10)
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TECHJAM_QUERY_EXPANSION_ENABLED": "true",
+            "TECHJAM_QUERY_EXPANSION_MODE": "recall",
+        },
+    )
+    def test_validated_scenario_is_forwarded_only_to_retrieval(self) -> None:
+        hypothesis = ScenarioHypothesis(
+            scenario_query="reliable portable long battery life",
+            basis="uni",
+            confidence=0.75,
+        )
+
+        class HypothesisInterpreter:
+            def interpret(self, message: str, state: ShoppingState) -> Interpretation:
+                patch_value = PreferencePatch(intent_mode="buying", category="laptop")
+                return Interpretation(
+                    state=apply_preference_patch(state, patch_value),
+                    patch=patch_value,
+                    scenario_hypotheses=(hypothesis,),
+                )
+
+        agent = Agent(self.catalog_path, interpreter=HypothesisInterpreter())
+        self.addCleanup(agent.close)
+        agent.reset("s", {"summary": "", "preference_tags": []})
+
+        with patch.object(
+            agent.retriever, "search", wraps=agent.retriever.search
+        ) as search:
+            agent.respond("s", "I want a good laptop for uni", 1, 10)
+
+        self.assertEqual(
+            search.call_args.kwargs["scenario_hypotheses"], (hypothesis,)
+        )
+        self.assertTrue(
+            {"reliable", "portable", "battery"}.isdisjoint(
+                agent.session_state("s").search_terms
+            )
+        )
+        diagnostic = agent.last_state_update_diagnostic("s")
+        self.assertEqual(diagnostic["scenario_hypotheses"][0]["basis"], "uni")
 
     def test_preferences_persist_across_turns_and_usage_is_per_turn(self) -> None:
         interpreter = QueueInterpreter(

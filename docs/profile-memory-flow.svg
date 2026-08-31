@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1920"
+     height="600"
+     viewBox="0 0 1920 600"
+     role="img"
+     aria-labelledby="title description">
+  <title id="title">From conversation evidence to future personalization</title>
+  <desc id="description">
+    A four-step flow showing conversation evidence, durable preference detection,
+    profile memory, and future personalization.
+  </desc>
+
+  <defs>
+    <marker id="arrowhead"
+            markerWidth="12"
+            markerHeight="12"
+            refX="10"
+            refY="6"
+            orient="auto"
+            markerUnits="strokeWidth">
+      <path d="M 0 0 L 12 6 L 0 12 Z" fill="#475569"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="7" stdDeviation="8" flood-color="#0F172A" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+
+  <!-- Connectors -->
+  <g fill="none" stroke="#475569" stroke-width="5" stroke-linecap="round" marker-end="url(#arrowhead)">
+    <path d="M 410 300 L 505 300"/>
+    <path d="M 900 300 L 995 300"/>
+    <path d="M 1390 300 L 1485 300"/>
+  </g>
+
+  <!-- Step 1: conversation evidence -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="100" width="370" height="400" rx="8"
+          fill="#EAF2FF" stroke="#2563EB" stroke-width="3"/>
+  </g>
+  <circle cx="86" cy="148" r="23" fill="#2563EB"/>
+  <text x="86" y="157" text-anchor="middle"
+        font-family="Inter, Arial, sans-serif" font-size="25" font-weight="700" fill="#FFFFFF">1</text>
+  <text x="80" y="222" font-family="Inter, Arial, sans-serif" fill="#102A43">
+    <tspan x="80" font-size="31" font-weight="700">Conversation</tspan>
+    <tspan x="80" dy="40" font-size="31" font-weight="700">Evidence</tspan>
+    <tspan x="80" dy="72" font-size="27" font-style="italic">“I usually prefer</tspan>
+    <tspan x="80" dy="38" font-size="27" font-style="italic">relaxed-fit jeans.”</tspan>
+  </text>
+
+  <!-- Step 2: durable preference detection -->
+  <g filter="url(#shadow)">
+    <rect x="530" y="100" width="370" height="400" rx="8"
+          fill="#FFF4D6" stroke="#D97706" stroke-width="3"/>
+  </g>
+  <circle cx="576" cy="148" r="23" fill="#D97706"/>
+  <text x="576" y="157" text-anchor="middle"
+        font-family="Inter, Arial, sans-serif" font-size="25" font-weight="700" fill="#FFFFFF">2</text>
+  <text x="570" y="222" font-family="Inter, Arial, sans-serif" fill="#422006">
+    <tspan x="570" font-size="31" font-weight="700">Durable Preference</tspan>
+    <tspan x="570" dy="40" font-size="31" font-weight="700">Detection</tspan>
+    <tspan x="570" dy="72" font-size="25">Explicit</tspan>
+    <tspan x="570" dy="38" font-size="25">Repeatable</tspan>
+    <tspan x="570" dy="38" font-size="25">Not session-specific</tspan>
+  </text>
+
+  <!-- Step 3: profile memory -->
+  <g filter="url(#shadow)">
+    <rect x="1020" y="100" width="370" height="400" rx="8"
+          fill="#E8F7EE" stroke="#16803C" stroke-width="5"/>
+  </g>
+  <circle cx="1066" cy="148" r="23" fill="#16803C"/>
+  <text x="1066" y="157" text-anchor="middle"
+        font-family="Inter, Arial, sans-serif" font-size="25" font-weight="700" fill="#FFFFFF">3</text>
+  <text x="1060" y="222" font-family="Inter, Arial, sans-serif" fill="#12351F">
+    <tspan x="1060" font-size="31" font-weight="700">Profile Memory</tspan>
+    <tspan x="1060" dy="72" font-size="25">Category: Jeans</tspan>
+    <tspan x="1060" dy="38" font-size="25">Style: Relaxed fit</tspan>
+    <tspan x="1060" dy="38" font-size="25">Confidence: 0.93</tspan>
+    <tspan x="1060" dy="38" font-size="25">Support: 2</tspan>
+  </text>
+
+  <!-- Step 4: future personalization -->
+  <g filter="url(#shadow)">
+    <rect x="1510" y="100" width="370" height="400" rx="8"
+          fill="#FDECEC" stroke="#D94A4A" stroke-width="3"/>
+  </g>
+  <circle cx="1556" cy="148" r="23" fill="#D94A4A"/>
+  <text x="1556" y="157" text-anchor="middle"
+        font-family="Inter, Arial, sans-serif" font-size="25" font-weight="700" fill="#FFFFFF">4</text>
+  <text x="1550" y="222" font-family="Inter, Arial, sans-serif" fill="#481A1A">
+    <tspan x="1550" font-size="31" font-weight="700">Future</tspan>
+    <tspan x="1550" dy="40" font-size="31" font-weight="700">Personalization</tspan>
+    <tspan x="1550" dy="72" font-size="25">Smarter retrieval</tspan>
+    <tspan x="1550" dy="38" font-size="25">Better ranking</tspan>
+    <tspan x="1550" dy="38" font-size="25">Fewer repeated questions</tspan>
+  </text>
+</svg>
