@@ -96,20 +96,16 @@ class EvaluatorTest(unittest.TestCase):
             }]
             result = evaluate(EchoTargetAgent(), samples, catalog_ids, categories, products)
             self.assertEqual(result["hit_rate_at_10"], 1.0)
-            self.assertEqual(result["ambiguity_routing"]["route_count"], 0)
-
+    
+            # The routing-diagnostics assertions that used to live here
+            # exercised instrumentation added to evaluator/local_evaluator.py.
+            # That file is now byte-identical to the published version, so the
+            # agent-side routing decision is asserted in test_preferences.py
+            # instead, where it belongs.
             routed = evaluate(
                 RoutedEchoTargetAgent(), samples, catalog_ids, categories, products
             )
-            self.assertEqual(routed["ambiguity_routing"], {
-                "route_count": 1,
-                "routed_session_count": 1,
-                "route_reasons": {"correction_or_override": 1},
-            })
-            self.assertEqual(routed["sessions"][0]["llm_route_count"], 1)
-            self.assertEqual(
-                routed["sessions"][0]["llm_routes"][0]["prompt_tokens"], 12
-            )
+            self.assertEqual(routed["hit_rate_at_10"], 1.0)
 
 
 if __name__ == "__main__":

@@ -138,6 +138,85 @@ depends on the model tier the organizer scores under. At ~51k tokens per
 
 ---
 
+## Submission compliance
+
+Each rule checked with a command, not an assertion.
+
+**The official harness is unmodified.** `evaluator/` is byte-identical to the
+published version:
+
+```bash
+git diff 2a6cc8e -- evaluator/     # no output
+```
+
+`starter/` never imports `evaluator`, so the agent has no dependency on it:
+
+```bash
+grep -rn "import evaluator" starter/     # no output
+```
+
+**No secrets.** `.env` is gitignored and never committed. One `.env` file is
+tracked — `docs/evaluations/ct/baseline-0.851142.env` — and contains settings
+only:
+
+```bash
+git ls-files | xargs grep -l "sk-" 2>/dev/null    # no output
+```
+
+**No organizer-only files or private evaluation data.** `organizer/`, `secure/`
+and `data/catalog.jsonl` are gitignored; the catalogue is supplied by the
+organizer at run time.
+
+**No privileged host access, no undeclared external services.** The only
+network dependency is the OpenAI API, which is optional — see *Network access*
+above. Both local models load with `local_files_only=True`.
+
+**Output contract.** `respond()` returns exactly `message`, `ask_attribute`,
+`recommendations`, `usage`. Two tests pin the key set, so widening it fails the
+suite rather than reaching a submission.
+
+## Environment variables that change the score
+
+`.env.example` is the reference configuration and carries a comment and
+measurement for every setting. The ones that materially move the number:
+
+| variable | value | effect if unset |
+| --- | --- | --- |
+| `TECHJAM_RERANK_ENABLED` | `true` | no semantic reranking |
+| `TECHJAM_VECTOR_ENABLED` | `true` | no vector recall |
+| `TECHJAM_DEPTH_MODE` | `hybrid` | list sized by turn, not confidence |
+| `TECHJAM_DEPTH_NORMALIZED_MARGIN` | `true` | thresholds become scale-dependent |
+| `TECHJAM_RATING_COUNT_COEF` | `0.030` | quality signal effectively off |
+| `TECHJAM_IDF_WEIGHTING` | `true` | boilerplate outweighs distinctive terms |
+| `TECHJAM_AUDIENCE_GUARDRAIL` | `true` | department mismatches survive reranking |
+| `TECHJAM_STAGED_FILTER` | `true` | buying stops filtering |
+| `TECHJAM_CONFIDENCE_CONTROLLER` | `true` | deferral reverts to turn count |
+| `OPENAI_ENABLED` | `true` | deterministic parsing only (valid, −0.0002) |
+
+Sourcing none of them scores 0.857069 against 0.914274.
+
+## How the held-out set was built
+
+`data/synthetic_pop.jsonl` holds out the **target product**: every session uses
+a catalogue product that appears as no public target, so no constant in this
+repository was fitted on it. Scenario mix, difficulty mix and mean constraints
+per session match the public set, and targets are drawn quantile-for-quantile
+against the public rating-count distribution (median 6,856 against the public
+set's 6,846), so a score gap reads as overfitting rather than as a harder set.
+
+```bash
+PYTHONPATH=. python tools/build_synthetic_set.py \
+  --catalog data/catalog.jsonl --match-popularity --output data/synthetic_pop.jsonl
+```
+
+`data/synthetic_set.jsonl` is an earlier uniform draw from the catalogue. It is
+kept because it correctly caught a profile-expansion overfit, but it is
+mis-specified on popularity (median 12 ratings) and returns false negatives for
+anything popularity-correlated. Validate popularity-sensitive changes against
+`synthetic_pop.jsonl`.
+
+---
+
 ## Method
 
 ### Retrieval
@@ -297,6 +376,49 @@ These ship switchable and off, each carrying its measurement in `.env.example`:
 
 `docs/evaluations/ct/improvement-backlog.md` records the reasoning behind each.
 
+## Verifying the numbers in this README
+
+Every figure above is reproducible. The commands, in order of what they check:
+
+```bash
+# 1. setup is correct before anything else
+PYTHONPATH=. python tools/verify_setup.py --catalog data/catalog.jsonl
+
+# 2. the headline public score            -> 0.914274 (+/- 0.0002 with the model on)
+python -m evaluator.local_evaluator \
+  --catalog data/catalog.jsonl --dataset data/public_set.jsonl
+
+# 3. the held-out score                   -> 0.876643
+python -m evaluator.local_evaluator \
+  --catalog data/catalog.jsonl --dataset data/synthetic_pop.jsonl
+
+# 4. ranking quality without depth capping -> 0.858477
+TECHJAM_DEPTH_MODE=turn TECHJAM_DEPTH_SCHEDULE= \
+python -m evaluator.local_evaluator \
+  --catalog data/catalog.jsonl --dataset data/public_set.jsonl
+
+# 5. the popularity assumption, both ways  -> +0.0147 / -0.0031
+TECHJAM_RATING_COUNT_COEF=0.000335 python -m evaluator.local_evaluator \
+  --catalog data/catalog.jsonl --dataset data/public_set.jsonl
+
+# 6. that it runs with no network at all
+OPENAI_ENABLED=false python -m evaluator.local_evaluator \
+  --catalog data/catalog.jsonl --dataset data/public_set.jsonl
+
+# 7. the test suite, in a clean shell
+env -i PATH="$PATH" HOME="$HOME" python -m unittest discover -s tests
+```
+
+The score decomposes as `0.50 x Hit@10 + 0.30 x MRR + 0.20 x Efficiency`, where
+`Efficiency = (11 - MTTC) / 10`. For the public run:
+
+```
+0.50 x 0.990 + 0.30 x 0.900581 + 0.20 x 0.7455 = 0.914274
+```
+
+Each rejected feature in the table below is reproducible the same way by
+setting its variable from `.env.example`.
+
 ## Repository layout
 
 ```
@@ -311,13 +433,53 @@ starter/            the agent
   explain.py          deterministic recommendation explanations
   profile_memory.py   dialog distillation into profile deltas
   llm_agent.py        gated LLM state interpretation
-evaluator/          official harness (unmodified)
+evaluator/          official harness, unmodified (see Submission compliance)
 tools/
   verify_setup.py     reproducibility diagnostic
   build_synthetic_set.py  held-out set builder
 docs/evaluations/ct/  measurement log
 tests/              338 tests
 ```
+
+## A demonstrated session
+
+`public_0103`, an intent-override session. Left column is the shopper; the
+right is what the agent returned and why.
+
+| turn | shopper | separation | returned | asked |
+| ---: | --- | ---: | ---: | --- |
+| 1 | "I'm looking for Underwear Undershirts. Imported" | 0.02 | 1 | material |
+| 2 | "For that, what matters is: cotton; 100% Cotton." | 0.08 | 1 | color |
+| 3 | "For that, what matters is: color: white." | 0.01 | 1 | feature |
+| 4 | "Actually, ignore my earlier preference. What I need is: cotton." | 0.03 | 1 | other |
+| 5 | — | 0.03 | 10 | target found at rank 3 |
+
+The separation never rises, so the agent shows a single best guess and keeps
+asking rather than banking a poor rank; at turn 5 the list widens and the
+target lands at rank 3. The override on turn 4 rewrites the material slot
+rather than merging it, and the audience and IDF guardrails run on every turn.
+
+Reproduce any session with:
+
+```bash
+PYTHONPATH=. python tools/demo_profile_memory.py
+```
+
+## Team contributions
+
+Derived from `git log`; both authors reviewed and measured each other's work
+before it merged.
+
+| area | primary |
+| --- | --- |
+| Multi-route retrieval, fusion and scoring weights | xdJanaut |
+| Confidence controller, depth policy, orchestration record | xdJanaut |
+| Audience guardrail, IDF damping, staged constraint filtering | xdJanaut |
+| Held-out set construction and the measurement discipline | xdJanaut |
+| LLM state interpretation and the ambiguity gate | Cui Tao |
+| Profile distillation and scenario query expansion | Cui Tao |
+| Cross-encoder reranking and vector index | Cui Tao |
+| Explanations, clarification policy, README | xdJanaut |
 
 ## Tests
 
