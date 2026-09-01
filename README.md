@@ -415,6 +415,39 @@ passed — but the calibration data itself was in-distribution.
 **Query rewrite and profile-driven personalisation did not pay.** Both were
 built, measured on both sets, and are switched off; see the table below.
 
+## Production roadmap
+
+The current system favours measurable, explainable behaviour on the available
+data. Four extensions would be the next production investments:
+
+**Prompt-prefix caching and cost observability.** Selective LLM routing already
+removes most unnecessary model calls, but each remaining request still carries
+the stable policy and tool definitions. We would keep that reusable prefix
+immutable, place a cache breakpoint after it, and append only per-turn state and
+the latest message. Cache-hit rate, cached input tokens, latency and estimated
+cost would be monitored explicitly rather than assuming that provider-side
+caching occurred.
+
+**Metadata-enriched vector retrieval.** During index construction, we would
+normalise each product's category hierarchy, audience, brand and price and store
+those fields alongside its embedding. Confirmed constraints could then restrict
+semantic retrieval to commercially relevant products. A staged relaxation from
+leaf category to parent category to the full catalogue would preserve recall
+when the shopper's request is uncertain.
+
+**Learned ranking.** The current evidence-fusion weights are explainable
+heuristics because 200 public sessions are insufficient for robust supervised
+training. With larger click, add-to-cart and purchase datasets, we would train a
+learning-to-rank model to combine lexical, vector, route, constraint, profile and
+quality signals. Deterministic constraint and audience guardrails would remain
+after the learned stage as the final authority for commercial correctness.
+
+**Learned clarification and orchestration.** The agent currently uses explicit,
+inspectable confidence rules to decide whether to recommend or clarify, which
+attribute to ask about, and how many products to show. With enough logged
+conversation outcomes, we would train and calibrate a policy for those choices,
+while retaining deterministic action boundaries and fallback behaviour.
+
 ## What we built and did not keep
 
 Every feature was measured on both sets and kept only if it earned its place.
