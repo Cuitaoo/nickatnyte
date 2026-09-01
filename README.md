@@ -11,6 +11,12 @@ ranking has not separated.
 | Public set, 200 sessions | **0.914274** | 0.990 | 0.900581 | 3.545 |
 | Held-out set, 200 unseen targets | **0.880493** | 0.960 | 0.854976 | 3.800 |
 
+These headline figures use the benchmark-selected setting
+`TECHJAM_QUERY_EXPANSION_ENABLED=false`. The product-demo configuration enables
+gated, recall-only scenario expansion as a deliberate capability trade-off; its
+public ablation measured approximately 0.0028 lower and used 6,765 additional
+tokens.
+
 Run-to-run variation with the model enabled is about ±0.0002 on the public set
 and ±0.004 on the held-out set; treat smaller differences as noise.
 
@@ -42,8 +48,19 @@ PYTHONPATH=. python tools/verify_setup.py --catalog data/catalog.jsonl
 - `requirements-vector.txt` — sentence-transformers and its dependencies
 - `data/catalog.jsonl` — the official 50,000-product catalogue, supplied by the
   organizer and deliberately not vendored here
-- `data/vector_index/` — prebuilt embeddings, committed, validated by a sha256
-  of the catalogue they were built from
+
+Vector retrieval is **disabled by default** because generating category and
+feature embeddings for all 50,000 products took **853 seconds (14m13s)** on the
+measured CPU host. The lexical, RRF, cross-encoder and guardrail pipeline runs
+without that startup cost. To enable optional in-memory vector recall:
+
+```bash
+TECHJAM_VECTOR_ENABLED=true python -m evaluator.local_evaluator \
+  --catalog data/catalog.jsonl --dataset data/public_set.jsonl
+```
+
+When enabled, the host builds the matrices once in RAM and reuses them for the
+life of the process; no generated vector-store files are required.
 
 ## Configuration is in the code, not in a `.env`
 
@@ -114,10 +131,9 @@ unmodified evaluator loop, and exits non-zero on any violation. Last run:
 
 ## Network access and offline fallback
 
-**The agent does not require live credentials.** With `OPENAI_API_KEY` unset it
-uses the deterministic parser throughout and makes no network calls at any
-point. Set `OPENAI_ENABLED=false` to force that path even when a key is
-present.
+**The agent does not require live OpenAI credentials.** With `OPENAI_API_KEY`
+unset it uses the deterministic parser throughout. Set `OPENAI_ENABLED=false`
+to force that path even when a key is present.
 
 With the model enabled, network failure is handled rather than fatal. Every LLM
 path catches its own exceptions and falls back to the deterministic parser, and
@@ -125,9 +141,13 @@ this was verified against a real failure: during development the API returned
 HTTP 429 `insufficient_quota` for an entire 200-session run, and the evaluation
 completed normally with valid results and zero tokens reported.
 
-Both local models — the cross-encoder and the embedding model — load from the
-HuggingFace cache with `local_files_only=True`, so no download is attempted at
-run time.
+The cross-encoder loads from the HuggingFace cache with
+`local_files_only=True`. The embedding model first uses the same cache and may
+download on a fresh connected host because catalogue vectors are generated in
+memory at runtime rather than bundled with the submission. For a
+network-restricted run, pre-warm the HuggingFace cache and set
+`TECHJAM_VECTOR_LOCAL_ONLY=true`. If the model is unavailable, vector
+construction fails closed and the lexical pipeline continues.
 
 Measured contribution of the model path: **+0.0002 public, +0.0038 held-out**.
 It is enabled because it is cheap and slightly positive, not because the agent
@@ -142,9 +162,15 @@ Measured on an Apple Silicon laptop, CPU only.
 | stage | time |
 | --- | ---: |
 | Catalogue index build | 0.29 s |
-| Agent construction (SQLite FTS5 + vector index) | 2.95 s |
+| Runtime category + feature embedding | 853 s (14m13s); host/model dependent |
 | Cross-encoder load (lazy, on first use) | 3.65 s |
-| **Total cold start** | **6.89 s** |
+
+The generated matrices occupy about 147 MB in RAM but zero bytes in the
+submission. Subsequent `Agent` instances in the same process reuse the cached
+matrices, and per-turn retrieval remains a matrix-vector search. This mode
+solves the upload limit at the cost of a long cold start; a deployment with a
+strict initialization timeout should build the same artifacts during its image
+build or use a managed cache outside the submission bundle.
 
 **Per turn** (`respond()`, 300 turns, no API call)
 
@@ -212,9 +238,10 @@ git ls-files | xargs grep -l "sk-" 2>/dev/null    # no output
 and `data/catalog.jsonl` are gitignored; the catalogue is supplied by the
 organizer at run time.
 
-**No privileged host access, no undeclared external services.** The only
-network dependency is the OpenAI API, which is optional — see *Network access*
-above. Both local models load with `local_files_only=True`.
+**No privileged host access or undeclared services.** OpenAI is optional. On a
+fresh connected host, HuggingFace supplies the declared embedding model once;
+pre-warming its standard cache removes that runtime dependency. See *Network
+access and offline fallback* above.
 
 **Output contract.** `respond()` returns exactly `message`, `ask_attribute`,
 `recommendations`, `usage`. Three tests pin the key set, so widening it fails
@@ -241,7 +268,8 @@ measured.
 | setting | ships as | effect if overridden |
 | --- | --- | --- |
 | `TECHJAM_RERANK_ENABLED` | `true` | no semantic reranking |
-| `TECHJAM_VECTOR_ENABLED` | `true` | no vector recall |
+| `TECHJAM_VECTOR_ENABLED` | `false` | enables in-memory vector recall with an 853 s measured cold start |
+| `TECHJAM_VECTOR_INDEX_MODE` | `memory` | `prebuilt` expects generated files |
 | `TECHJAM_DEPTH_MODE` | `hybrid` | list sized by turn, not confidence |
 | `TECHJAM_DEPTH_NORMALIZED_MARGIN` | `true` | thresholds become scale-dependent |
 | `TECHJAM_RATING_COUNT_COEF` | `0.030` | quality signal effectively off |
@@ -250,6 +278,7 @@ measured.
 | `TECHJAM_STAGED_FILTER` | `true` | buying stops filtering |
 | `TECHJAM_CONFIDENCE_CONTROLLER` | `true` | deferral reverts to turn count |
 | `OPENAI_ENABLED` | `true` | deterministic parsing only (valid, −0.0002) |
+| `TECHJAM_QUERY_EXPANSION_ENABLED` | `true` | disables temporary scenario-vector recall; benchmark score improves by approximately 0.0028 |
 
 Overriding all of them back to the old code defaults scores 0.857069.
 
@@ -371,7 +400,7 @@ preference the product does not match.
 | --- | --- | --- |
 | State interpretation | `gpt-5.6-luna` | gated; ~32 of 800 turns |
 | Semantic reranking | `cross-encoder/ms-marco-MiniLM-L6-v2` | local, CPU |
-| Vector recall | `BAAI/bge-small-en-v1.5` | local, prebuilt index |
+| Vector recall | `BAAI/bge-small-en-v1.5` | optional; disabled by default, built in host RAM when enabled |
 
 ---
 
@@ -412,8 +441,41 @@ lexical and guardrail stages are carrying the current score.
 from 70 public sessions and were then validated on the held-out set, which
 passed — but the calibration data itself was in-distribution.
 
-**Query rewrite and profile-driven personalisation did not pay.** Both were
-built, measured on both sets, and are switched off; see the table below.
+**Scenario query expansion is an explicit product trade-off.** The gated LLM
+may propose temporary functional hypotheses for an additional vector-recall
+route. Those terms never become confirmed preferences and cannot override
+explicit constraints. The route measured approximately −0.0028 public and
+6,765 additional tokens, but is enabled to demonstrate support for ambiguous,
+real-world scenario language. Deterministic query rewriting and profile-driven
+personalisation remain switched off.
+
+## Limitations and next steps
+
+These limitations do not block the current agent: each has a safe fallback and
+a clear production path.
+
+- **Runtime vector startup:** Building vectors for 50,000 products took 853
+  seconds, so vector recall is disabled by default and the measured lexical
+  pipeline remains fully operational. Given more time, we would generate the
+  index during image deployment and load it from a managed cache rather than
+  rebuilding it during evaluator startup.
+- **Limited supervision:** The current fusion and orchestration weights are
+  explainable heuristics because 200 public sessions are too few for reliable
+  training. With real click, add-to-cart and purchase outcomes, we would train
+  and calibrate learning-to-rank and clarification policies while retaining
+  deterministic commercial guardrails.
+- **Incomplete catalogue metadata:** Missing or noisy attributes can weaken
+  audience and constraint detection. Current guardrails only reject proven
+  violations; a production version would add normalized category, audience,
+  brand and price metadata with staged filter relaxation.
+- **External language reasoning:** Complex ambiguous turns benefit from an LLM,
+  but availability and latency vary. Selective routing already limits calls and
+  every failure falls back deterministically; prompt-prefix caching and a small
+  local intent model would reduce the remaining cost further.
+- **Long-term identity:** The benchmark exposes no stable user identity, so
+  profile memory is persistence-ready rather than linked across test sessions.
+  Production deployment would connect it to consented identity, retention,
+  confidence decay and user-controlled deletion.
 
 ## Production roadmap
 
@@ -428,7 +490,7 @@ the latest message. Cache-hit rate, cached input tokens, latency and estimated
 cost would be monitored explicitly rather than assuming that provider-side
 caching occurred.
 
-**Metadata-enriched vector retrieval.** During index construction, we would
+**Metadata-enriched vector retrieval.** During runtime embedding construction, we would
 normalise each product's category hierarchy, audience, brand and price and store
 those fields alongside its embedding. Confirmed constraints could then restrict
 semantic retrieval to commercially relevant products. A staged relaxation from
@@ -460,7 +522,6 @@ These ship switchable and off, each carrying its measurement as a comment in
 | Result diversity | −0.0134 | — | spreading pushed targets out of the top 10 |
 | Semantic profile expansion | +0.0003 | −0.0060 | tags match half the catalogue |
 | Query rewrite (deterministic) | −0.0029 | — | pipeline already normalises the query |
-| Query rewrite (LLM, gated) | −0.0028 | — | matched the regex, cost 6,765 tokens |
 | Over-generality cutoff | −0.0002 | — | withholding delays without narrowing |
 | Question steering on overload | −0.0039 | −0.0018 | split power is not answerability |
 | Override as reinforcement | −0.0002 | — | the erasure was doing useful work |
@@ -478,12 +539,12 @@ different number from the same commit.
 # 1. setup is correct before anything else
 PYTHONPATH=. python tools/verify_setup.py --catalog data/catalog.jsonl
 
-# 2. the headline public score            -> 0.914274 (+/- 0.0002 with the model on)
-python -m evaluator.local_evaluator \
+# 2. the benchmark-selected public score  -> 0.914274 (+/- 0.0002 with the model on)
+TECHJAM_QUERY_EXPANSION_ENABLED=false python -m evaluator.local_evaluator \
   --catalog data/catalog.jsonl --dataset data/public_set.jsonl
 
-# 3. the held-out score                   -> 0.880493
-python -m evaluator.local_evaluator \
+# 3. the benchmark-selected held-out score -> 0.880493
+TECHJAM_QUERY_EXPANSION_ENABLED=false python -m evaluator.local_evaluator \
   --catalog data/catalog.jsonl --dataset data/synthetic_pop.jsonl
 
 # 4. ranking quality without depth capping -> 0.858477
@@ -495,8 +556,9 @@ python -m evaluator.local_evaluator \
 TECHJAM_RATING_COUNT_COEF=0.000335 python -m evaluator.local_evaluator \
   --catalog data/catalog.jsonl --dataset data/public_set.jsonl
 
-# 6. that it runs with no network at all
-OPENAI_ENABLED=false python -m evaluator.local_evaluator \
+# 6. that it runs with no network at all (after pre-warming local model caches)
+OPENAI_ENABLED=false TECHJAM_VECTOR_LOCAL_ONLY=true \
+python -m evaluator.local_evaluator \
   --catalog data/catalog.jsonl --dataset data/public_set.jsonl
 
 # 7. every output rule, over a real 200-session run
@@ -531,13 +593,14 @@ starter/            the agent
   explain.py          deterministic recommendation explanations
   profile_memory.py   dialog distillation into profile deltas
   llm_agent.py        gated LLM state interpretation
+  vector_index.py     process-cached runtime catalogue embeddings
 evaluator/          official harness, unmodified (see Submission compliance)
 tools/
   verify_setup.py           reproducibility diagnostic
   check_output_contract.py  output-rule checker
   build_synthetic_set.py    held-out set builder
 docs/evaluations/ct/  measurement log
-tests/              343 tests
+tests/              347 tests
 ```
 
 ## A demonstrated session
@@ -577,7 +640,7 @@ before it merged.
 | Held-out set construction and the measurement discipline | xdJanaut |
 | LLM state interpretation and the ambiguity gate | Cui Tao |
 | Profile distillation and scenario query expansion | Cui Tao |
-| Cross-encoder reranking and vector index | Cui Tao |
+| Cross-encoder reranking and in-memory vector recall | Cui Tao |
 | Explanations, clarification policy, README | xdJanaut |
 
 ## Tests
@@ -586,4 +649,4 @@ before it merged.
 python -m unittest discover -s tests
 ```
 
-343 tests, no environment setup required.
+347 tests, no environment setup required.

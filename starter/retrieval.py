@@ -29,6 +29,7 @@ from starter.tracks import (
     select_diverse_recommendations,
 )
 from starter.vector_index import (
+    DEFAULT_EMBEDDING_MODEL,
     VectorCatalogIndex,
     category_query_embedding_text,
     feature_query_embedding_text,
@@ -578,6 +579,8 @@ class CatalogRetriever:
         self.audience_penalty = _env_float("TECHJAM_AUDIENCE_PENALTY", 0.15, 0.0, 1.0)
         self.audience_top_n = _env_int("TECHJAM_AUDIENCE_TOP_N", 20, 1, 200)
         self.vector_index: VectorCatalogIndex | None = None
+        self.vector_index_status = "disabled"
+        self.vector_index_error: str | None = None
         self.vector_top_k = _env_int("TECHJAM_VECTOR_TOP_K", 30, 1, 200)
         self.vector_weight = _env_float("TECHJAM_VECTOR_WEIGHT", 0.0, 0.0, 2.0)
         self.vector_category_weight = _env_float(
@@ -689,10 +692,49 @@ class CatalogRetriever:
     def _load_vector_index(self) -> None:
         if not _env_bool("TECHJAM_VECTOR_ENABLED", False):
             return
-        index_dir = config.getenv("TECHJAM_VECTOR_INDEX_DIR", "data/vector_index")
-        self.vector_index = VectorCatalogIndex.load_if_available(
-            self.catalog_path, index_dir
+        mode = (
+            config.getenv("TECHJAM_VECTOR_INDEX_MODE", "prebuilt").strip().lower()
+            or "prebuilt"
         )
+        index_dir = config.getenv("TECHJAM_VECTOR_INDEX_DIR", "data/vector_index")
+        if mode in {"prebuilt", "auto"}:
+            self.vector_index = VectorCatalogIndex.load_if_available(
+                self.catalog_path, index_dir
+            )
+            if self.vector_index is not None:
+                self.vector_index_status = "prebuilt"
+                return
+        if mode not in {"memory", "auto"}:
+            self.vector_index_status = f"unavailable:{mode}"
+            return
+
+        minimum_products = _env_int(
+            "TECHJAM_VECTOR_MIN_CATALOG_SIZE", 1_000, 1, 50_000
+        )
+        if len(self.metadata) < minimum_products:
+            self.vector_index_status = "skipped:small-catalog"
+            return
+        try:
+            self.vector_index = VectorCatalogIndex.load_in_memory_cached(
+                self.catalog_path,
+                model_name=config.getenv(
+                    "TECHJAM_VECTOR_MODEL", DEFAULT_EMBEDDING_MODEL
+                ),
+                batch_size=_env_int(
+                    "TECHJAM_VECTOR_BATCH_SIZE", 64, 1, 512
+                ),
+                max_seq_length=_env_int(
+                    "TECHJAM_VECTOR_MAX_SEQ_LENGTH", 128, 8, 512
+                ),
+                local_files_only=_env_bool("TECHJAM_VECTOR_LOCAL_ONLY", False),
+            )
+            self.vector_index_status = "memory"
+        except Exception as exc:
+            # Vector recall is additive. A missing model or constrained host
+            # must leave the deterministic lexical pipeline fully usable.
+            self.vector_index = None
+            self.vector_index_status = "unavailable:memory"
+            self.vector_index_error = f"{type(exc).__name__}: {exc}"
 
     @staticmethod
     def _number(value: object) -> float | None:

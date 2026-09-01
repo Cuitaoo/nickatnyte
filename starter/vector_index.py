@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,10 @@ FEATURE_ATTRIBUTES = (
     "budget",
     "other",
 )
+
+
+_MEMORY_INDEX_CACHE: dict[tuple[object, ...], "VectorCatalogIndex"] = {}
+_MEMORY_INDEX_LOCK = threading.Lock()
 
 
 def catalog_sha256(catalog_path: str | Path) -> str:
@@ -238,6 +243,94 @@ class VectorCatalogIndex:
         except Exception:
             return None
 
+    @classmethod
+    def build_in_memory(
+        cls,
+        catalog_path: str | Path,
+        *,
+        model_name: str = DEFAULT_EMBEDDING_MODEL,
+        batch_size: int = 64,
+        max_seq_length: int = 128,
+        local_files_only: bool = False,
+    ) -> "VectorCatalogIndex":
+        """Encode the supplied catalog into process memory without writing files."""
+
+        np = _import_numpy()
+        catalog = Path(catalog_path)
+        model = _load_embedding_model(model_name, local_files_only=local_files_only)
+        configured_max_length = int(getattr(model, "max_seq_length", max_seq_length))
+        model.max_seq_length = min(configured_max_length, max_seq_length)
+
+        row_count = _catalog_row_count(catalog)
+        parent_asins, category_matrix, feature_matrix = _encode_catalog_in_memory(
+            catalog,
+            model,
+            np,
+            row_count=row_count,
+            batch_size=batch_size,
+        )
+
+        instance = object.__new__(cls)
+        instance.index_dir = None
+        instance.config = {
+            "model_name": model_name,
+            "catalog_path": str(catalog),
+            "catalog_sha256": catalog_sha256(catalog),
+            "row_count": len(parent_asins),
+            "embedding_dim": int(category_matrix.shape[1])
+            if category_matrix.ndim == 2
+            else 0,
+            "max_seq_length": model.max_seq_length,
+            "local_files_only": local_files_only,
+            "storage": "memory",
+            "routes": ["vector_category", "vector_feature"],
+        }
+        instance.parent_asins = parent_asins
+        instance._np = np
+        instance.embeddings = None
+        category_matrix.setflags(write=False)
+        feature_matrix.setflags(write=False)
+        instance.category_embeddings = category_matrix
+        instance.feature_embeddings = feature_matrix
+        instance._model = model
+        return instance
+
+    @classmethod
+    def load_in_memory_cached(
+        cls,
+        catalog_path: str | Path,
+        *,
+        model_name: str = DEFAULT_EMBEDDING_MODEL,
+        batch_size: int = 64,
+        max_seq_length: int = 128,
+        local_files_only: bool = False,
+    ) -> "VectorCatalogIndex":
+        """Return one immutable in-memory index per catalog/model configuration."""
+
+        catalog = Path(catalog_path).resolve()
+        stat = catalog.stat()
+        key = (
+            str(catalog),
+            stat.st_size,
+            stat.st_mtime_ns,
+            model_name,
+            batch_size,
+            max_seq_length,
+            local_files_only,
+        )
+        with _MEMORY_INDEX_LOCK:
+            cached = _MEMORY_INDEX_CACHE.get(key)
+            if cached is None:
+                cached = cls.build_in_memory(
+                    catalog,
+                    model_name=model_name,
+                    batch_size=batch_size,
+                    max_seq_length=max_seq_length,
+                    local_files_only=local_files_only,
+                )
+                _MEMORY_INDEX_CACHE[key] = cached
+            return cached
+
     def search(self, state: ShoppingState, latest_message: str, top_k: int) -> list[str]:
         matrix = self.embeddings
         if matrix is None:
@@ -335,6 +428,8 @@ class VectorCatalogIndex:
         return results
 
     def _load_optional_matrix(self, filename: str):
+        if self.index_dir is None:
+            return None
         path = self.index_dir / filename
         if not path.exists():
             return None
@@ -376,11 +471,16 @@ class VectorCatalogIndex:
 
             model_path = self.config.get("model_path")
             if model_path:
+                if self.index_dir is None:
+                    raise RuntimeError("A saved model path requires a disk-backed index")
                 path = self.index_dir / str(model_path)
                 self._model = SentenceTransformer(str(path), local_files_only=True)
             else:
                 self._model = SentenceTransformer(
-                    str(self.config["model_name"]), local_files_only=True
+                    str(self.config["model_name"]),
+                    local_files_only=bool(
+                        self.config.get("local_files_only", True)
+                    ),
                 )
             if self.config.get("max_seq_length"):
                 self._model.max_seq_length = int(self.config["max_seq_length"])
@@ -469,6 +569,93 @@ def build_vector_index(
         json.dumps(config, indent=2) + "\n", encoding="utf-8"
     )
     return config
+
+
+def clear_memory_index_cache() -> None:
+    """Release process-cached matrices; intended for tests and controlled reloads."""
+
+    with _MEMORY_INDEX_LOCK:
+        _MEMORY_INDEX_CACHE.clear()
+
+
+def _catalog_row_count(catalog_path: Path) -> int:
+    with catalog_path.open(encoding="utf-8") as handle:
+        return sum(1 for line in handle if line.strip())
+
+
+def _encode_catalog_in_memory(
+    catalog_path: Path,
+    model: Any,
+    np: Any,
+    *,
+    row_count: int,
+    batch_size: int,
+) -> tuple[list[str], Any, Any]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+
+    parent_asins: list[str] = []
+    category_matrix = None
+    feature_matrix = None
+    offset = 0
+    # A larger read chunk lets SentenceTransformer keep its internal batches
+    # busy without retaining all 100,000 route texts at once.
+    chunk_size = max(batch_size, batch_size * 32)
+    category_texts: list[str] = []
+    feature_texts: list[str] = []
+
+    def flush() -> None:
+        nonlocal category_matrix, feature_matrix, offset
+        if not category_texts:
+            return
+        count = len(category_texts)
+        encoded = model.encode(
+            [*category_texts, *feature_texts],
+            batch_size=batch_size,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        encoded_matrix = np.asarray(encoded, dtype="float32")
+        if encoded_matrix.ndim != 2 or encoded_matrix.shape[0] != count * 2:
+            raise RuntimeError("Embedding model returned an unexpected matrix shape")
+        if category_matrix is None:
+            dimension = int(encoded_matrix.shape[1])
+            category_matrix = np.empty((row_count, dimension), dtype="float32")
+            feature_matrix = np.empty((row_count, dimension), dtype="float32")
+        category_matrix[offset : offset + count] = encoded_matrix[:count]
+        feature_matrix[offset : offset + count] = encoded_matrix[count:]
+        offset += count
+        category_texts.clear()
+        feature_texts.clear()
+
+    with catalog_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            product = json.loads(line)
+            parent_asins.append(str(product["parent_asin"]))
+            category_texts.append(category_embedding_text(product))
+            feature_texts.append(feature_embedding_text(product))
+            if len(category_texts) >= chunk_size:
+                flush()
+    flush()
+
+    if offset != row_count:
+        raise RuntimeError(
+            f"Catalog changed while embedding: expected {row_count} rows, encoded {offset}"
+        )
+    if category_matrix is None or feature_matrix is None:
+        dimension_method = getattr(model, "get_sentence_embedding_dimension", None)
+        dimension = int(dimension_method() or 0) if callable(dimension_method) else 0
+        category_matrix = np.empty((0, dimension), dtype="float32")
+        feature_matrix = np.empty((0, dimension), dtype="float32")
+    return parent_asins, category_matrix, feature_matrix
+
+
+def _load_embedding_model(model_name: str, *, local_files_only: bool):
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer(model_name, local_files_only=local_files_only)
 
 
 def _import_numpy():

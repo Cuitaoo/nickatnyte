@@ -15,8 +15,6 @@ your number differs from ours.
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 import os
 import subprocess
 from pathlib import Path
@@ -26,7 +24,8 @@ from pathlib import Path
 # the two ever drift apart.
 EXPECTED = {
     "TECHJAM_RERANK_ENABLED": "true",
-    "TECHJAM_VECTOR_ENABLED": "true",
+    "TECHJAM_VECTOR_ENABLED": "false",
+    "TECHJAM_VECTOR_INDEX_MODE": "memory",
     "TECHJAM_DEPTH_MODE": "hybrid",
     "TECHJAM_DEPTH_NORMALIZED_MARGIN": "true",
     "TECHJAM_DEPTH_RATIO_WIDE": "0.30",
@@ -44,14 +43,6 @@ EXPECTED = {
 }
 
 OK, BAD, WARN = "  ok  ", " FAIL ", " warn "
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def parse_env_file(path: Path) -> dict[str, str]:
@@ -99,27 +90,21 @@ def main() -> None:
         print(f"\n[1] commit\n  {WARN} not a git checkout")
 
     # 2. catalog ------------------------------------------------------------
-    print("\n[2] catalog vs prebuilt vector index")
+    print("\n[2] catalog for runtime in-memory embeddings")
     catalog = Path(args.catalog)
-    index_config = Path("data/vector_index/config.json")
     if not catalog.exists():
         print(f"  {BAD} catalog not found at {catalog}")
         print("         data/catalog.jsonl is gitignored - supply it yourself")
         problems.append("catalog missing")
-    elif not index_config.exists():
-        print(f"  {BAD} data/vector_index/config.json missing")
-        problems.append("vector index missing")
     else:
-        expected = json.loads(index_config.read_text())["catalog_sha256"]
-        actual = sha256(catalog)
-        if actual == expected:
-            print(f"  {OK} sha256 {actual[:16]} matches the index")
+        with catalog.open(encoding="utf-8") as handle:
+            row_count = sum(1 for line in handle if line.strip())
+        if row_count == 50_000:
+            print(f"  {OK} {row_count:,} products; embeddings will be built in host RAM")
         else:
-            print(f"  {BAD} catalog sha256 does NOT match the vector index")
-            print(f"         index expects {expected[:16]}")
-            print(f"         yours is      {actual[:16]}")
-            print("         a different catalogue changes every number")
-            problems.append("catalog differs from the one the index was built on")
+            print(f"  {WARN} expected 50,000 products, found {row_count:,}")
+            problems.append("catalog row count differs from the measured catalog")
+        print(f"  {OK} no uploaded vector-index files are required")
 
     # 3. effective configuration -------------------------------------------
     print("\n[3] effective configuration (shipped defaults + your shell)")
@@ -173,11 +158,16 @@ def main() -> None:
                 print(f"  {WARN} cross-encoder FAILED to load: {type(exc).__name__}")
                 print("         TECHJAM_RERANK_LOCAL_ONLY=true means it will not download.")
                 print("         Measured impact is about +0.0004 - not your problem here.")
-        print(
-            f"  {OK} vector index loaded"
-            if retriever.vector_index is not None
-            else f"  {WARN} vector index not loaded (worth about 0.0005)"
-        )
+        if retriever.vector_index is not None:
+            row_count = retriever.vector_index.config.get("row_count", "unknown")
+            print(
+                f"  {OK} vector embeddings ready in host memory "
+                f"({row_count} rows, source={retriever.vector_index_status})"
+            )
+        else:
+            print(f"  {WARN} vector embeddings unavailable (worth about 0.0005)")
+            if retriever.vector_index_error:
+                print(f"         {retriever.vector_index_error}")
         retriever.close()
     except Exception as exc:
         print(f"  {BAD} could not construct the retriever: {type(exc).__name__}: {exc}")

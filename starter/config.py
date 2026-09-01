@@ -122,7 +122,21 @@ DEFAULTS: dict[str, str] = {
     "TECHJAM_RERANK_WEIGHT": "0.65",
     "TECHJAM_RERANK_LOCAL_ONLY": "true",  # never download at run time
     "TECHJAM_RERANK_TEXT_FORMAT": "legacy",
-    "TECHJAM_VECTOR_ENABLED": "true",
+    # Disabled for the submitted runtime: rebuilding the two catalogue
+    # matrices took 853 seconds (14m13s) on the measured CPU host.
+    "TECHJAM_VECTOR_ENABLED": "false",
+    # Build route embeddings once in host RAM instead of shipping 147 MB of
+    # .npy files. The process cache is reused by every Agent on the same host.
+    "TECHJAM_VECTOR_INDEX_MODE": "memory",
+    "TECHJAM_VECTOR_MODEL": "BAAI/bge-small-en-v1.5",
+    "TECHJAM_VECTOR_BATCH_SIZE": "64",
+    "TECHJAM_VECTOR_MAX_SEQ_LENGTH": "128",
+    # A fresh connected host may fetch the model into its HuggingFace cache.
+    # Set true after pre-warming that cache, or to guarantee no network attempt.
+    "TECHJAM_VECTOR_LOCAL_ONLY": "false",
+    # Tiny test/demo catalogues do not benefit enough to pay model startup.
+    "TECHJAM_VECTOR_MIN_CATALOG_SIZE": "1000",
+    # Still supported for development ablations with INDEX_MODE=prebuilt/auto.
     "TECHJAM_VECTOR_INDEX_DIR": "data/vector_index",
     "TECHJAM_VECTOR_TOP_K": "30",
     # Vector routes contribute recall, not score: they widen the pool when
@@ -139,13 +153,18 @@ DEFAULTS: dict[str, str] = {
     "TECHJAM_VECTOR_HIGH_CONFIDENCE_ROUTES": "3",
     "TECHJAM_VECTOR_MIN_SIMILARITY": "0.45",
 
+    # -- Deliberate product capability trade-off ---------------------------
+    # Temporary LLM scenario hypotheses add a recall route without mutating
+    # confirmed state. This is enabled for the product demo despite a measured
+    # -0.0028 public-score delta and 6,765 additional tokens.
+    "TECHJAM_QUERY_EXPANSION_ENABLED": "true",
+    "TECHJAM_QUERY_EXPANSION_MODE": "recall",
+    "TECHJAM_QUERY_EXPANSION_MIN_CONFIDENCE": "0.60",
+    "TECHJAM_QUERY_EXPANSION_MAX_HYPOTHESES": "3",
+
     # -- Built, measured, and switched off --------------------------------
     # Each of these is implemented and reachable by exporting its name. Each
     # is off because it was measured on both sets and did not earn its place.
-    "TECHJAM_QUERY_EXPANSION_ENABLED": "false",       # -0.0029 deterministic, -0.0028 gated LLM
-    "TECHJAM_QUERY_EXPANSION_MODE": "shadow",
-    "TECHJAM_QUERY_EXPANSION_MIN_CONFIDENCE": "0.60",
-    "TECHJAM_QUERY_EXPANSION_MAX_HYPOTHESES": "3",
     "TECHJAM_DUAL_TRACK": "false",                    # -0.0017 public, -0.0066 held out
     "TECHJAM_DUAL_TRACK_STRENGTH": "1.0",
     "TECHJAM_DUAL_TRACK_BROWSING": "false",
