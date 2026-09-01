@@ -1,21 +1,12 @@
 from __future__ import annotations
 
+
+from starter.retrieval import AttributeDiagnostic
 from starter.state import ShoppingState
+from starter import config
 
 
 RECOMMENDATION_MESSAGE = "Here are the closest matches I found."
-ATTRIBUTE_PRIORITY = (
-    "category",
-    "material",
-    "color",
-    "size",
-    "style",
-    "brand",
-    "budget",
-    "feature",
-    "use_case",
-    "other",
-)
 QUESTION_TEMPLATES = {
     "category": "What kind of product are you looking for?",
     "material": "Do you have a material preference?",
@@ -30,19 +21,206 @@ QUESTION_TEMPLATES = {
 }
 
 
+QUESTION_PRIORS = {
+    "category": 0.20,
+    "material": 0.46,
+    "color": 0.36,
+    "feature": 0.15,
+    "use_case": 0.14,
+    "style": 0.12,
+    "size": 0.12,
+    "brand": 0.05,
+    "budget": 0.05,
+}
+MIN_SPECIFIC_QUESTION_SCORE = 0.28
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = config.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(config.getenv(name, str(default)))
+    except ValueError:
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(config.getenv(name, str(default)))
+    except ValueError:
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _should_promote_other(state: ShoppingState) -> bool:
+    """Ask the open-ended question before the specific facets are exhausted.
+
+    "other" accepts any undisclosed constraint, while a specific attribute only
+    accepts constraints of its own kind, so promoting it harvests details that
+    do not fit the standard facets - model numbers, "rubber sole", "tie
+    closure".
+
+    Both triggers read structured state rather than the raw message.
+    `last_update_type` is set by the state updater, so it cannot be fooled by
+    the word "actually" in an ordinary reply, and
+    `consecutive_no_preference_turns` resets the moment the shopper does give a
+    preference, which is what "two failed attempts" actually means.
+
+    Env-gated so each can be measured apart; both default on, having measured
+    +0.014962 public / +0.003921 held-out together.
+    """
+    if _env_bool("TECHJAM_OTHER_AFTER_OVERRIDE", True) and (
+        state.turn > 0
+        and state.last_update_type in {"replace_preferences", "product_change"}
+    ):
+        return True
+
+    threshold = _env_int("TECHJAM_OTHER_AFTER_NO_PREFERENCE", 2, 0, 10)
+    if threshold:
+        # "cumulative" counts every attribute the shopper has ever declined;
+        # "consecutive" resets the moment they do answer. Cumulative is the
+        # default: it fires earlier and measured +0.001900 (browsing +0.008333,
+        # MTTC 3.615 -> 3.570) with Hit@10 unchanged. The reset in the
+        # consecutive counter discards evidence that the facets are exhausted
+        # just because one question happened to land.
+        if _env_bool("TECHJAM_OTHER_COUNTER_CUMULATIVE", True):
+            count = len(state.no_preference_attributes)
+        else:
+            count = state.consecutive_no_preference_turns
+        if count >= threshold:
+            return True
+    return False
+
+
+def _question_score(
+    attribute: str, item: AttributeDiagnostic, overloaded: bool = False
+) -> float:
+    if overloaded:
+        # Over-generality: the pool is unnarrowed and the ranking has not
+        # separated, so the job of the next question is to split the pool
+        # rather than to be easy to answer. `disagreement` is Gini impurity
+        # over the candidates' signatures for this attribute - it is exactly
+        # how much asking would divide them - so it dominates, and the priors
+        # (which encode how likely a shopper is to have an opinion) are halved.
+        return (
+            _env_float("TECHJAM_OVERLOAD_W_DISAGREE", 0.70, 0.0, 2.0) * item.disagreement
+            + 0.15 * item.coverage
+            + 0.15 * item.relevance
+            + _env_float("TECHJAM_OVERLOAD_W_PRIOR", 0.5, 0.0, 2.0)
+            * QUESTION_PRIORS[attribute]
+        )
+    return (
+        0.45 * item.disagreement
+        + 0.25 * item.coverage
+        + 0.20 * item.relevance
+        + QUESTION_PRIORS[attribute]
+    )
+
+
 def choose_clarification(
-    state: ShoppingState, turn: int
+    state: ShoppingState,
+    turn: int,
+    diagnostics: dict[str, AttributeDiagnostic],
+    overloaded: bool = False,
 ) -> tuple[str, str | None]:
     if turn >= 10:
         return RECOMMENDATION_MESSAGE, None
 
     excluded = set(state.asked_attributes)
+    # "other" harvests any undisclosed constraint, so repeat it until the
+    # shopper says there is nothing left (no_preference below).
+    excluded.discard("other")
     excluded.update(state.no_preference_attributes)
-    excluded.update(state.preferences)
+    # An attribute whose only evidence came from a correction ("what I need is
+    # cotton") was never actually asked; the shopper may still hold a more
+    # specific constraint for it, so keep it askable once.
+    correction_only = {
+        attribute
+        for attribute in state.preferences
+        if attribute not in state.asked_attributes
+        and any(item.attribute == attribute for item in state.preference_evidence)
+        and all(
+            item.source_kind == "correction"
+            for item in state.preference_evidence
+            if item.attribute == attribute
+        )
+    }
+    excluded.update(
+        attribute for attribute in state.preferences if attribute not in correction_only
+    )
     if state.category:
         excluded.add("category")
 
-    for attribute in ATTRIBUTE_PRIORITY:
-        if attribute not in excluded:
-            return QUESTION_TEMPLATES[attribute], attribute
+    category_diagnostic = diagnostics.get("category")
+    if (
+        "category" not in excluded
+        and category_diagnostic is not None
+        and category_diagnostic.coverage >= 0.40
+        and category_diagnostic.disagreement >= 0.35
+    ):
+        return QUESTION_TEMPLATES["category"], "category"
+
+    # Placed after the category question so a genuine product change still
+    # gets asked first, but ahead of the specific facets so "other" no longer
+    # waits for every one of them to score badly.
+    if "other" not in excluded and _should_promote_other(state):
+        return QUESTION_TEMPLATES["other"], "other"
+
+    scored: list[tuple[float, str]] = []
+    for attribute, item in diagnostics.items():
+        if (
+            attribute not in QUESTION_PRIORS
+            or attribute in excluded
+            or attribute == "category"
+        ):
+            continue
+        if item.coverage < 0.10:
+            continue
+        if attribute in {"brand", "budget"} and (
+            item.coverage < 0.35 or item.disagreement < 0.15
+        ):
+            continue
+        scored.append((_question_score(attribute, item, overloaded), attribute))
+
+    if scored:
+        best_score, best_attribute = max(scored, key=lambda pair: (pair[0], pair[1]))
+        threshold = (
+            _env_float("TECHJAM_OVERLOAD_QUESTION_MIN", 0.18, 0.0, 2.0)
+            if overloaded
+            else MIN_SPECIFIC_QUESTION_SCORE
+        )
+        if best_score >= threshold:
+            return QUESTION_TEMPLATES[best_attribute], best_attribute
+
+    if "other" not in excluded:
+        return QUESTION_TEMPLATES["other"], "other"
+
+    # Everything has been asked and declined. Going silent wastes the rest of
+    # the session: the shopper is still answering, and the evaluator's reply to
+    # a question-less turn is literally "ask me about one specific attribute".
+    # Re-ask the attribute that still separates the candidates most, preferring
+    # one the shopper has never actually been asked, since a "no preference"
+    # given early may simply have come too soon to be meaningful.
+    if _env_bool("TECHJAM_REASK_WHEN_EXHAUSTED", False) and diagnostics:
+        askable = [
+            (item.disagreement, attribute)
+            for attribute, item in diagnostics.items()
+            if attribute in QUESTION_PRIORS
+            and attribute != "category"
+            and attribute not in state.preferences
+            and item.disagreement > 0.0
+        ]
+        if askable:
+            never_asked = [
+                pair for pair in askable if pair[1] not in state.asked_attributes
+            ]
+            best = max(never_asked or askable, key=lambda pair: (pair[0], pair[1]))
+            return QUESTION_TEMPLATES[best[1]], best[1]
+
     return RECOMMENDATION_MESSAGE, None
